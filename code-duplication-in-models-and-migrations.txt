@@ -1,0 +1,58 @@
+Code duplication in models and migrations
+We have noticed that the code for models and migrations is very similar. For example, the model of teams
+
+
+class Team extends Model {}
+
+Team.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  name: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+    unique: true
+  },
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'team'
+})
+
+module.exports = Team
+and migration contain much of the same code
+
+
+const { DataTypes } = require('sequelize')
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.createTable('teams', {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+      },
+      name: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+        unique: true
+      },
+    })
+  },
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.dropTable('teams')
+  },
+}
+Couldn't we optimize the code so that, for example, the model exports the shared parts needed for the migration?
+
+The problem is that the definition of the model may change over time, for example, the name field may change, or its data type may change. Migrations must be able to be performed successfully at any time from start to end, and if the migrations are relying on the model to have certain content, it may no longer be true in a month or a year's time. Therefore, despite the "copy paste", the migration code should be completely separate from the model code.
+
+One solution would be to use Sequelize's command line tool(opens in a new tab), which generates both models and migration files based on commands given at the command line. For example, the following command would create a User model with name, username, and admin as attributes, as well as the migration that manages the creation of the database table:
+
+
+npx sequelize-cli model:generate --name User --attributes name:string,username:string,admin:boolean
+From the command line, you can also run rollbacks, i.e. undo migrations. The command line documentation is unfortunately incomplete and in this course we decided to do both models and migrations manually. The solution may or may not have been a wise one.

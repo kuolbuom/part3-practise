@@ -1,0 +1,582 @@
+Features of models
+There are some situations where, by default, we do not want to handle all the rows of a particular table. One such case could be that we don't normally want to display users that have been disabled in our application. In such a situation, we could define the default scope(opens in a new tab) for the model like this:
+
+
+class User extends Model {}
+
+User.init({
+  // field definitions
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'user',
+  defaultScope: {
+    where: {
+      disabled: false
+    }
+  },
+})
+
+module.exports = User
+Now the query caused by the function call User.findAll() has the following WHERE condition:
+
+
+WHERE "user". "disabled" = false;
+For models, it is possible to define other scopes as well:
+
+
+User.init({
+  // field definitions
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'user',
+  defaultScope: {
+    where: {
+      disabled: false
+    }
+  },
+  scopes: {
+    admin: {
+      where: {
+        admin: true
+      }
+    },
+    disabled: {
+      where: {
+        disabled: true
+      }
+    },
+    name(value) {
+      return {
+        where: {
+          name: {
+            [Op.iLike]: value
+          }
+        }
+      }
+    },
+  }
+})
+Scopes are used as follows:
+
+
+// all admins
+const adminUsers = await User.scope('admin').findAll()
+
+// all inactive users
+const disabledUsers = await User.scope('disabled').findAll()
+
+// users with the string jami in their name
+const jamiUsers = await User.scope({ method: ['name', '%jami%'] }).findAll()
+It is also possible to chain scopes:
+
+
+// admins with the string jami in their name
+const jamiUsers = await User.scope('admin', { method: ['name', '%jami%'] }).findAll()
+Since Sequelize models are normal JavaScript classes(opens in a new tab), it is possible to add new methods to them.
+
+Here are two examples:
+
+
+const { Model, DataTypes, Op } = require('sequelize')
+
+const Note = require('./note')
+const { sequelize } = require('../util/db')
+
+class User extends Model {
+
+  async numberOfNotes() {
+    return (await this.getNotes()).length
+  }
+
+
+  static async withNotes(limit){
+    return await User.findAll({
+      attributes: {
+        include: [[ sequelize.fn("COUNT", sequelize.col("notes.id")), "noteCount" ]]
+      },
+      include: [
+        {
+          model: Note,
+          attributes: []
+        },
+      ],
+      group: ['user.id'],
+      having: sequelize.literal(`COUNT(notes.id) > ${limit}`)
+    })
+  }
+}
+
+User.init({
+  // ...
+})
+
+module.exports = User
+The first of the methods numberOfNotes is an instance method, meaning that it can be called on instances of the model:
+
+
+const jami = await User.findOne({ name: 'Jami Kousa'})
+const cnt = await jami.numberOfNotes()
+console.log(`Jami has created ${cnt} notes`)
+Within the instance method, the keyword this therefore refers to the instance itself:
+
+
+async numberOfNotes() {
+  return (await this.getNotes()).length
+}
+The second method withNotes returns users with at least the specified number of notes. It is a class method, meaning that it is called directly on the model:
+
+
+const users = await User.withNotes(2)
+console.log(JSON.stringify(users, null, 2))
+users.forEach(u => {
+  console.log(u.name)
+})
+
+You have four query behaviours:
+Scope	                What it does
+defaultScope	        Returns users who are not disabled
+admin	                Returns administrators
+disabled	            Returns disabled users
+name(value)	          Searches names using case-insensitive matching
+
+Test the requests
+Request	                           Scope applied
+GET /api/users	                   defaultScope
+GET /api/users?admin=true	         admin
+GET /api/users?disabled=true	     disabled
+
+The % symbols are SQL wildcards:
+- %jami% — jami anywhere in the name.
+- jami% — name starts with jami.
+- %jami — name ends with jami.
+
+
+The three examples in your material:
+User.scope("admin").findAll();
+User.scope("disabled").findAll();
+User.scope({ method: ["name", "%jami%"] }).findAll();
+
+are demonstrations of how to use your additional scopes. They don't necessarily require changes to your existing GET route.
+
+If you want to experiment with the examples, you can temporarily replace:
+User.findAll({
+
+
+with:
+User.scope("admin").findAll({
+
+
+Keep all your existing attributes and include options.
+
+6. Let's check your understanding
+Scopes knowledge check
+0/4 answered
+
+1. When you execute User.findAll(), which scope is automatically applied?
+
+admin
+
+disabled
+
+defaultScope
+
+name
+
+
+
+2. What does User.scope('disabled').findAll() do?
+
+Returns only active users
+
+Returns disabled users
+
+Updates users to disabled
+
+
+
+3. What does %jami% mean in your name scope?
+
+Name starts with jami
+
+Name ends with jami
+
+Name contains jami anywhere
+
+4. What happens when you chain admin and name scopes?
+
+Either condition can match
+
+Both conditions must match
+
+Only the name condition applies
+
+
+Check answers
+
+
+
+Excellent! This section introduces something important: adding your own methods to Sequelize models.
+
+So far, you've used Sequelize methods such as:
+User.findAll()
+User.findByPk()
+User.create()
+user.getNotes()
+
+
+Now you're learning that you can create your own methods, so your application can perform database operations through more meaningful commands.
+
+There are two types in your material:
+1. Instance methods.
+2. Class methods (static methods).
+Let's understand them using your Notes application.
+1. Instance methods
+Look at this method:
+async numberOfNotes() {
+  return (await this.getNotes()).length;
+}
+
+
+This is an instance method because it operates on one particular user.
+
+For example:
+const jami = await User.findOne({
+  where: {
+    name: "Jami Kousa",
+  },
+});
+
+const count = await jami.numberOfNotes();
+
+console.log(`Jami has created ${count} notes`);
+
+
+Let's break it down.
+
+First:
+const jami = await User.findOne({
+  where: { name: "Jami Kousa" },
+});
+
+
+This retrieves one user from PostgreSQL.
+
+Second:
+await jami.numberOfNotes();
+
+
+We call the method on the user we retrieved.
+
+Third:
+this.getNotes()
+
+
+Here, this refers to the particular user instance (jami).
+
+Sequelize already provides getNotes() because you defined the association:
+User.hasMany(Note);
+
+
+Visualize an instance method
+User instance: Jami
+
+Retrieved from PostgreSQL
+
+jami.numberOfNotes()
+
+this.getNotes()
+
+Gets notes belonging to Jami
+
+
+Returns the number of notes
+
+The important idea: an instance method works with an individual object.
+2. Class methods (static methods)
+Now look at the second example:
+static async withNotes(limit) {
+  return await User.findAll({
+    attributes: {
+      include: [
+        [
+          sequelize.fn("COUNT", sequelize.col("notes.id")),
+          "noteCount",
+        ],
+      ],
+    },
+    include: [
+      {
+        model: Note,
+        attributes: [],
+      },
+    ],
+    group: ["user.id"],
+    having: sequelize.literal(`COUNT(notes.id) > ${limit}`),
+  });
+}
+
+
+Notice this keyword:
+static
+
+
+That changes how the method is called.
+
+An instance method is called on a user:
+jami.numberOfNotes();
+
+
+A static method is called directly on the model:
+User.withNotes(2);
+
+
+Why?
+
+Because withNotes() is not asking about one specific user. It searches across all users.
+Visualize a static method
+User model
+
+All users in the database
+
+User.withNotes(2)
+
+Find users with more than 2 notes
+
+COUNT + GROUP BY + HAVING
+
+
+Returns matching users
+
+3. Understand the SQL behind withNotes()
+This is the most interesting part of the example.
+
+The method uses three SQL concepts.
+
+A. COUNT
+sequelize.fn("COUNT", sequelize.col("notes.id"))
+
+
+Counts how many notes belong to each user.
+
+Conceptually:
+COUNT(notes.id)
+
+
+B. GROUP BY
+group: ["user.id"]
+
+
+Groups the notes according to their user.
+
+For example:
+User	Notes
+Jami	5
+Kuol	3
+John	1
+
+C. HAVING
+having: sequelize.literal(`COUNT(notes.id) > ${limit}`)
+
+
+Filters the groups after counting.
+
+If you call:
+User.withNotes(2);
+
+
+The SQL condition is conceptually:
+HAVING COUNT(notes.id) > 2;
+
+
+The result contains Jami and Kuol, but not John.
+
+One important safety improvement: the example uses sequelize.literal() with a template string. Avoid inserting untrusted request values directly into SQL literals. We can use parameterized expressions when implementing this in your application.
+
+4. Where do these methods go?
+Since your User model extends Sequelize's Model class, you define the methods inside that class.
+
+For example, your models/user.js structure would look like this:
+class User extends Model {
+  // Instance method
+  async numberOfNotes() {
+    return (await this.getNotes()).length;
+  }
+
+  // Static method
+  static async withNotes(limit) {
+    // Database query goes here
+  }
+}
+
+User.init(
+  {
+    // Your existing fields
+  },
+  {
+    // Your existing Sequelize options
+  },
+);
+
+
+Notice that both methods are inside the class, but outside User.init().
+5. Instance vs static methods
+Instance method	Static method
+Called on a user object	Called on the User model
+jami.numberOfNotes()	User.withNotes(2)
+Works with one user	Can retrieve many users
+Uses this for that instance	Uses the class itself
+
+
+Let's check your understanding
+Quick knowledge check
+1. Where do you call an instance method?
+
+User.numberOfNotes()
+
+jami.numberOfNotes()
+
+User.findAll().numberOfNotes()
+
+Correct! You call an instance method on a particular user instance.
+
+
+2. What does the static keyword mean here?
+
+The method belongs to the model class
+
+The method belongs to one user
+
+The method creates a database table
+
+Correct! Static methods are called directly on the class, such as User.withNotes(2).
+
+
+3. In numberOfNotes(), what does this refer to?
+
+The PostgreSQL database
+
+The User model class
+
+The particular user instance
+
+Correct! An instance method's this refers to the object on which it was called.
+
+Check answersScore: 3/3
+
+
+Your User model is almost correct. You have both custom methods in the right place: inside class User extends Model and before User.init().
+
+There is just one important issue to fix before testing.
+Step 1: Import the Note model
+Inside withNotes(), you use:
+model: Note,
+
+
+But you haven't imported Note at the top of your file.
+
+Add:
+const Note = require("./note");
+
+
+Your imports should now look like this:
+const { Model, DataTypes, Op } = require("sequelize");
+const Note = require("./note");
+const { sequelize } = require("../util/db");
+
+
+Step 2: Understand the two methods
+1. Instance method — numberOfNotes()
+async numberOfNotes() {
+  return (await this.getNotes()).length;
+}
+
+
+This works on one particular user.
+
+For example:
+const user = await User.findByPk(1);
+const count = await user.numberOfNotes();
+
+
+- this represents that particular user.
+- this.getNotes() retrieves that user's associated notes.
+- .length counts how many notes were retrieved.
+2. Static method — withNotes(limit)
+static async withNotes(limit) {
+  // ...
+}
+
+
+This works on the User model itself, not on one user.
+
+For example:
+const users = await User.withNotes(2);
+
+
+It finds users who have more than two notes.
+
+The SQL operations work together like this:
+How withNotes(2) works
+1. COUNT(notes.id)
+
+Count how many notes each user has.
+
+
+2. GROUP BY user.id
+
+Group each user's notes together.
+
+
+3. HAVING COUNT(notes.id) > 2
+
+Keep only users with more than two notes.
+
+
+Step 3: One important improvement
+Your current having statement inserts limit directly into SQL:
+having: sequelize.literal(`COUNT(notes.id) > ${limit}`)
+
+
+For this learning exercise, it illustrates how HAVING works. However, don't use this pattern with values coming directly from users. Validate the input and use parameterized queries for production code.
+
+ C:\Users\Student\Desktop\part13> node
+Welcome to Node.js v24.13.0.
+Type ".help" for more information.
+> const { User } = require("./models");
+◇ injected env (2) from .env
+undefined
+> await User.withNotes(-1);
+Uncaught Error: limit must be a non-negative integer
+    at user.withNotes (C:\Users\Student\Desktop\part13\models\user.js:12:13)
+    at REPL2:1:44
+> await User.withNotes(1.5);
+Uncaught Error: limit must be a non-negative integer
+    at user.withNotes (C:\Users\Student\Desktop\part13\models\user.js:12:13)
+    at REPL3:1:44
+> const result2 = await User.withNotes(1);
+Executing (default): SELECT "user"."id", "user"."username", "user"."name", "user"."admin", "user"."disabled", COUNT("notes"."id") AS "noteCount" FROM "users" AS "user" LEFT OUTER JOIN "notes" AS "notes" ON "user"."id" = "notes"."user_id" WHERE "user"."disabled" = false GROUP BY "user"."id" HAVING COUNT(notes.id) > 1;
+undefined
+> result2.map(user => user.toJSON());
+[
+  {
+    id: 3,
+    username: 'nyuel',
+    name: 'Nyuel Juol',
+    admin: false,
+    disabled: false,
+    noteCount: '2'
+  }
+]
+> 
+
+What you've learned
+- numberOfNotes() is an instance method — it works on one user.
+- withNotes(limit) is a static method — it works on the User model.
+- COUNT() counts associated notes.
+- GROUP BY groups notes by user.
+- HAVING filters users based on their note count.
+- Validation prevents invalid values from reaching the database.

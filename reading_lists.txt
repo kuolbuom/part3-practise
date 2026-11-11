@@ -1,0 +1,561 @@
+This exercise builds on the database migrations you have just completed. The important concept is learning how to create a many-to-many relationship using a join table.
+
+Let's understand the database design first, then implement it step by step.
+1. Understand what we are building
+Currently, your database has two main tables:
+- users – stores registered users.
+- blogs – stores blogs.
+Now we need a third table:
+
+- reading_lists – connects users with blogs and stores whether each blog has been read.
+
+For example:
+users
+        id	      username
+        1	        kuol
+        2	        john
+
+
+blogs
+        id	      title
+        1	        Learn React
+        2	        Learn PostgreSQL
+        3	        Learn Docker
+
+
+reading_lists
+                 user_id	   blog_id	  read
+                 1	         1	        false
+                 1	         2	        true
+                 2	         1	        false
+
+
+Notice something important:
+- Kuol has added two blogs to his reading list.
+- John has added one blog.
+- The same blog can appear in different users' reading lists.
+- Each user can have a different read/unread status for the same blog.
+
+3. What columns should the join table have?
+We need four important columns:
+Column	         Purpose
+id	             Unique reading-list record
+user_id	         Identifies the user
+blog_id	         Identifies the blog
+read	           Tracks whether the user has read the blog
+
+The read column should default to false.
+
+Why? Because when a user adds a blog to their reading list, they haven't read it yet.
+
+Let's break it down:
+Code	                              Meaning
+user_id	                            Column in reading_lists
+type: DataTypes.INTEGER	            Stores an integer
+allowNull: false	                  Cannot be empty
+references.model: "users"	          References the users table
+references.key: "id"	              References the id column in users
+onDelete: "CASCADE"	                If the referenced user is deleted, their reading-list records are also deleted
+
+Visual explanation
+users table (parent)
+id Primary key
+username
+
+reading_lists table (child)
+user_id Foreign key
+
+blog_id
+user_id references users.id
+
+
+Exercise:
+21. Expanding the reading list
+
+Excellent! Exercise 21 is where the reading-list database structure becomes functional.
+
+In Exercise 20, we created the reading_lists table. Now we will connect it to Sequelize models and build two things:
+1. POST /api/readinglists – add a blog to a user's reading list.
+2. GET /api/users/:id – return the user together with their reading-list blogs.
+We'll do this step by step, keeping your existing code intact.
+1. Understand the relationship
+We now have three models:
+- User
+- Blog
+- ReadingList
+
+Think of ReadingList as the connection between a user and a blog.
+For example:
+{
+  "userId": 3,
+  "blogId": 5
+}
+This means user 3 wants blog 5 in their reading list.
+
+Understand the new association
+This is the important part:
+User.belongsToMany(Blog, {
+  through: ReadingList,
+  as: "readings",
+  foreignKey: "userId",
+  otherKey: "blogId",
+});
+
+
+- belongsToMany(Blog) means one user can be associated with many blogs.
+- through: ReadingList tells Sequelize which join table connects them.
+- as: "readings" gives us the name we can use when querying the user's reading list.
+- foreignKey: "userId" identifies the user column in the join table.
+- otherKey: "blogId" identifies the blog column.
+We retain your existing User.hasMany(Blog) association because it represents a different relationship.
+
+Your task now
+Make these two changes:
+1. Create models/readingList.js.
+2. Update models/index.js.
+Then start your application:
+npm start
+
+Understand the important part
+Look at this statement:
+const reading = await ReadingList.create({
+  userId,
+  blogId,
+});
+
+What happens here?
+1. Sequelize receives the two IDs.
+2. It inserts them into the reading_lists table.
+3. The database automatically generates the id.
+4. The read column automatically receives false because of our default value.
+We don't need to supply read: false manually.
+
+Notice the improvement:
+- readings contains the actual blog objects.
+- ReadingList is no longer exposed.
+- passwordHash is excluded.
+- The join-table read status is not exposed.
+- User and blog information are returned together.
+
+Let's test three more things before considering the exercise complete.
+1. Invalid user ID
+POST http://localhost:3000/api/readinglists
+Content-Type: application/json
+
+{
+  "userId": 999,
+  "blogId": 1
+}
+
+
+Expected: 404 User not found.
+
+2. Invalid blog ID
+POST http://localhost:3000/api/readinglists
+Content-Type: application/json
+
+{
+  "userId": 1,
+  "blogId": 999
+}
+Expected: 404 Blog not found.
+
+3. Duplicate reading-list entry
+Send your original successful request again:
+{
+  "userId": 1,
+  "blogId": 1
+}
+
+Expected: a unique-constraint error because the same user cannot add the same blog twice.
+One important learning point
+Your original relationship:
+User.hasMany(Blog, { as: "blogs" });
+
+represents blogs created by a user.
+Your new relationship:
+User.belongsToMany(Blog, {
+  through: ReadingList,
+  as: "readings",
+});
+
+represents blogs that a user wants to read.
+These are two different relationships, even though they connect the same models.
+
+Let's understand what each response confirms:
+1. Invalid user ID
+{
+  "error": "User not found"
+}
+
+
+Passed
+ Your controller checks whether the user exists before creating the reading-list entry.
+2. Invalid blog ID
+{
+  "error": "Blog not found"
+}
+
+
+Passed
+ Your controller also checks whether the blog exists.
+3. Duplicate reading-list entry
+{
+  "error": [
+    "user_id must be unique",
+    "blog_id must be unique"
+  ]
+}
+
+
+Database constraint working
+ Your unique constraint prevents the same user from adding the same blog more than once.
+
+One small detail: the duplicate error mentions both columns separately, but the database constraint is actually a combined unique constraint on (user_id, blog_id). That's what we want.
+Exercise 21 status
+Completed
+You've now implemented:
+- ReadingList model.
+- Many-to-many relationships between users and blogs.
+- POST /api/readinglists.
+- Validation for missing users and blogs.
+- Duplicate-entry protection.
+- GET /api/users/:id returning a readings array without exposing the join-table data.
+
+Exercise:
+22. Bookkeeping.
+
+Great! Exercise 22 builds directly on Exercise 21. You already have the many-to-many relationship working. Now we want to show information from the join table (reading_lists) inside each blog object.
+
+Look at the difference:
+Before (Exercise 21):
+{
+  "id": 1,
+  "title": "Test Blog",
+  "author": "Test Author"
+}
+
+After (Exercise 22):
+{
+  "id": 1,
+  "title": "Test Blog",
+  "author": "Test Author",
+  "readingList": {
+    "read": false,
+    "id": 1
+  }
+}
+
+The important idea is that reading_lists connects a user to a blog. Its id and read fields belong to that connection, not to the blog itself.
+Step 1: Update the GET route
+Open controllers/users.js.
+
+Find the include section in your GET /:id route. Currently, you have:
+include: {
+  model: Blog,
+  as: "readings",
+  attributes: { exclude: ["userId"] },
+  through: {
+    attributes: [],
+  },
+},
+
+The important part is:
+through: {
+  attributes: [],
+},
+
+An empty array tells Sequelize: Don't include any columns from the join table.
+Change it to:
+through: {
+  attributes: ["id", "read"],
+},
+
+Your complete include should now look like this:
+include: {
+  model: Blog,
+  as: "readings",
+  attributes: { exclude: ["userId"] },
+  through: {
+    attributes: ["id", "read"],
+  },
+},
+
+Step 2: Test the route
+Restart your server if necessary, then send:
+GET http://localhost:3000/api/users/1
+
+You should now see the join-table information included with each blog. Sequelize may initially name the nested property ReadingList rather than readingList.
+
+Perfect! That's exactly what we wanted from Sequelize. Your response now includes:
+"ReadingList": {
+  "id": 1,
+  "read": false
+}
+
+This confirms that Sequelize is retrieving the two fields from the reading_lists join table.
+
+There is just one small difference from the exercise: the property is called ReadingList (capital R and L), while the required output uses readingList.
+
+Step 3: Rename the join-table property
+In your controllers/users.js, after fetching the user and before sending the response, add:
+user.readings.forEach((blog) => {
+  blog.dataValues.readingList = blog.dataValues.ReadingList;
+  delete blog.dataValues.ReadingList;
+});
+
+Then keep:
+res.json(user);
+
+Why does this work?
+- blog.dataValues.ReadingList contains the join-table information Sequelize loaded.
+- We copy that information into readingList.
+- We delete the original ReadingList property so it doesn't appear twice in the JSON response.
+Now test GET /api/users/1 again.
+
+You should see:
+"readingList": {
+  "id": 1,
+  "read": false
+}
+
+Exercise:
+23. Better bookkeeping.
+Exercise 23 introduces an important security concept: a user must only be allowed to update their own reading-list entries.
+
+For example:
+- User 1 owns reading-list entry id: 1.
+- User 2 tries to update entry id: 1.
+- The application must reject User 2, even if they know the entry's ID.
+We will use your existing userExtractor middleware to identify the logged-in user from the JWT token. It makes the authenticated user available as req.user. 
+Step 1: Add the PUT route
+Open controllers/readinglists.js.
+
+At the top, add this import:
+const { userExtractor } = require("../util/middleware");
+
+
+Now add this route below your existing POST route:
+router.put("/:id", userExtractor, async (req, res, next) => {
+  try {
+    const readingList = await ReadingList.findByPk(req.params.id);
+
+    if (!readingList) {
+      return res.status(404).json({
+        error: "Reading list entry not found",
+      });
+    }
+
+    if (readingList.userId !== req.user.id) {
+      return res.status(403).json({
+        error: "You can only update your own reading list",
+      });
+    }
+
+    if (typeof req.body.read !== "boolean") {
+      return res.status(400).json({
+        error: "read must be a boolean",
+      });
+    }
+
+    readingList.read = req.body.read;
+
+    await readingList.save();
+
+    res.json(readingList);
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+Understand the important part
+This is the security check:
+if (readingList.userId !== req.user.id)
+
+
+Think of it like this:
+Reading-list entry
+Entry owner
+
+userId = 1
+
+
+Logged-in user
+JWT identifies
+
+req.user.id = 1
+
+Same user — update allowed
+
+If the logged-in user has id = 2, the request is rejected with 403 Forbidden.
+
+Step 2: Test it
+First, log in and get your JWT token.
+
+Then send this request using REST Client:
+PUT http://localhost:3000/api/readinglists/1
+Content-Type: application/json
+Authorization: Bearer YOUR_TOKEN_HERE
+{
+  "read": true
+}
+
+Expected response:
+{
+  "id": 1,
+  "userId": 1,
+  "blogId": 1,
+  "read": true
+}
+
+The timestamps may also appear.
+
+Excellent! Update successful
+
+
+Your response confirms that Exercise 23's main functionality works.
+
+Look at this part:
+"readingList": {
+  "id": 1,
+  "read": true
+}
+
+
+Previously, it was:
+"readingList": {
+  "id": 1,
+  "read": false
+}
+
+
+Now it has changed to true.
+What happened behind the scenes?
+1. You sent a PUT request to /api/readinglists/1.
+2. userExtractor identified the logged-in user using the JWT.
+3. Sequelize found reading-list entry id: 1.
+4. The ownership check confirmed that the entry belongs to the logged-in user.
+5. readingList.save() persisted the change in PostgreSQL.
+One important test remains
+We should verify that another user cannot update this entry.
+
+Log in as a different user and use their token:
+PUT http://localhost:3000/api/readinglists/1
+Content-Type: application/json
+Authorization: Bearer SECOND_USER_TOKEN
+
+{
+  "read": false
+}
+
+Expected response:
+{
+  "error": "You can only update your own reading list"
+}
+
+Expected status: 403 Forbidden.
+
+Perfect! Exercise 23 completed
+
+Your ownership protection works correctly.
+
+The response:
+{
+  "error": "You can only update your own reading list"
+}
+
+
+confirms that your application rejected the second user.
+What you've demonstrated
+Test	Expected result	Status
+Owner marks blog as read	200 OK	Passed
+Another user tries to update it	403 Forbidden	Passed
+
+Important concept you learned
+Authentication vs authorization
+- Authentication: Who are you? Your JWT token identifies the user.
+- Authorization: Are you allowed to do this? Your ownership check verifies that the reading-list entry belongs to that user.
+These are two different security responsibilities.
+
+Exercise:
+24. More control.
+
+This is the next reading-list improvement: filter a user's reading list based on whether each blog has been read.
+
+You need to support three requests:
+Request	Expected result
+GET /api/users/1	All reading-list blogs
+GET /api/users/1?read=true	Only read blogs
+GET /api/users/1?read=false	Only unread blogs
+
+We'll build on your existing GET /:id route.
+Step 1: Update controllers/users.js
+Inside your GET /:id route, before User.findByPk, add:
+const readingListWhere = {};
+
+if (req.query.read === "true") {
+  readingListWhere.read = true;
+} else if (req.query.read === "false") {
+  readingListWhere.read = false;
+}
+
+Why compare with strings?
+
+Query parameters arrive as strings, not JavaScript booleans.
+
+For example:
+req.query.read === "true"  // true
+req.query.read === "false" // false
+
+
+Step 2: Update the through option
+Find your existing include:
+include: {
+  model: Blog,
+  as: "readings",
+  attributes: { exclude: ["userId"] },
+  through: {
+    attributes: ["id", "read"],
+  },
+},
+
+
+Change only the through section:
+through: {
+  attributes: ["id", "read"],
+  where: readingListWhere,
+},
+
+
+Your complete include becomes:
+include: {
+  model: Blog,
+  as: "readings",
+  attributes: { exclude: ["userId"] },
+  through: {
+    attributes: ["id", "read"],
+    where: readingListWhere,
+  },
+},
+
+
+Keep your existing code that renames ReadingList to readingList.
+Step 3: Test the three requests
+Since your reading-list entry is currently marked read: true, these are the expected results:
+
+Test A — All blogs
+GET http://localhost:3000/api/users/1
+
+Test B — Read blogs
+GET http://localhost:3000/api/users/1?read=true
+
+Expected: your Test Blog appears.
+
+Test C — Unread blogs
+GET http://localhost:3000/api/users/1?read=false
+
+Expected:
+"readings": []
+
+The important concept is through.where: it filters the records in the join table (reading_lists), rather than filtering the blogs themselves.

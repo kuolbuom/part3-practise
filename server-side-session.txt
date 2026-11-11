@@ -1,0 +1,2262 @@
+Excellent! This is the final exercise, Exercise 25 – Grande finale. It brings together authentication, database relationships, middleware, and migrations.
+
+The main idea is to make JWT authentication revocable. Currently, a JWT remains usable until it expires, even if the user logs out or is disabled. We are going to fix that using server-side sessions.
+
+Let's implement it step by step. I'll explain the reasoning behind each change rather than just giving you code.
+1. Understand the authentication flow
+
+Currently, your authentication probably works like this:
+
+Current authentication
+User logs in
+
+Server generates JWT
+
+Client sends JWT with requests
+
+JWT remains valid even after logout
+
+We want this instead:
+New authentication
+User logs in
+
+Server generates JWT and saves a session in PostgreSQL
+
+Client sends JWT with requests
+
+Server checks whether the session exists and user is enabled
+
+Valid session
+
+Allow request
+
+
+Invalid session
+
+Reject request
+
+
+
+
+2. What we need to implement
+There are four main changes.
+Component	                              Responsibility
+User model	                            Add disabled boolean
+Session model	                          Store active login sessions
+Authentication middleware	              Check session and user status
+Logout route	                          Delete the active session
+
+We will also create database migrations for the changes.
+
+3. Start with the database structure
+Our intended tables will look like this:
+
+Users
+Column	            Type
+id	                INTEGER
+username	          STRING
+passwordHash	      STRING
+disabled	          BOOLEAN
+
+Sessions
+Column	            Type
+id	                INTEGER
+token	              STRING
+userId	            INTEGER (foreign key)
+
+The relationship is:
+
+User.hasMany(Session)
+
+Session.belongsTo(User)
+
+One user can have multiple active sessions, for example, when logged in from two different devices.
+
+4. Let's begin with your existing project
+Before changing anything, I want to make sure we work in the correct application and preserve your existing authentication.
+
+Run this command in the project folder you are using for Exercise 25:
+Get-ChildItem
+
+
+Then show me these files:
+models/
+controllers/
+util/
+
+
+In particular, I want to inspect:
+- models/user.js
+- models/index.js
+- Your login controller or router
+- Your authentication middleware
+- Your existing migration files
+We'll start with the disabled column and Session migration, test them, and then move to login, middleware, and logout.
+
+Important: We won't remove your existing JWT authentication. We'll extend it so that the database can revoke a token immediately.
+
+Step 1: Inspect your models
+Run this command:
+Get-ChildItem .\models | Select-Object -ExpandProperty Name
+
+
+Then run:
+Get-Content .\models\user.js
+
+
+And:
+Get-Content .\models\index.js
+
+
+Send me the outputs.
+
+Why are we doing this first?
+
+Before creating the Session model, we need to understand how your existing Sequelize models are initialized and connected.
+
+We'll follow this order:
+1. Add disabled to User through a migration.
+2. Create the Session model and its migration.
+3. Establish the User–Session relationship.
+4. Save sessions during login.
+5. Validate sessions in authentication middleware.
+6. Implement DELETE /api/logout.
+7. Test that logged-out and disabled users cannot perform authenticated actions.
+We'll take it one step at a time.
+
+Good! Now I understand your existing model structure.
+
+There are three important observations.
+1. You already have disabled in your User model
+disabled: {
+  type: DataTypes.BOOLEAN,
+  defaultValue: false,
+},
+
+
+This is good. It means we don't need to add the attribute again to user.js.
+2. You already have a default scope
+defaultScope: {
+  where: {
+    disabled: false,
+  },
+},
+
+
+This is important.
+
+It means Sequelize automatically excludes disabled users from ordinary queries such as:
+const user = await User.findByPk(id);
+
+
+To retrieve disabled users when necessary, you can use:
+const user = await User.unscoped().findByPk(id);
+
+
+We'll keep this behavior in mind when implementing authentication.
+3. Your models are registered in models/index.js
+Currently, you have relationships such as:
+User.hasMany(Note);
+Note.belongsTo(User);
+
+
+Eventually, we'll add:
+User.hasMany(Session);
+Session.belongsTo(User);
+
+
+But let's not change anything yet.
+
+Step 2: Inspect your existing migrations
+Before creating another migration, let's check whether the database already has the disabled column.
+
+Run:
+Get-ChildItem .\migrations | Select-Object -ExpandProperty Name
+
+
+Then show me your database configuration:
+Get-Content .\util\db.js
+
+
+Why?
+
+We need to understand your existing migration system so that:
+- We don't create duplicate columns.
+- We don't damage your existing Notes database.
+- We use the same migration approach for the new Session table.
+After that, we'll create the Session migration.
+
+Excellent. Your migration setup is already in good shape. You're using Umzug + SequelizeStorage, which means migrations are tracked in your PostgreSQL database.
+
+I can also confirm that you already have a migration:
+20260211_02_admin_and_disabled_to_users.js
+
+
+So the disabled column is likely already handled by that migration. We should not create another one.
+Step 2.1: Understand what we have
+Your migration history:
+Migration	          Purpose
+20260211_00	        Initialize notes and users
+20260211_02	        Add admin and disabled
+20260211_03	        Add teams and memberships
+20260211_04	        Add user notes
+
+Our next migration will be:
+20260211_05_create_sessions.js
+
+
+It will create the sessions table.
+Step 2.2: Inspect the existing disabled migration
+Run:
+Get-Content .\migrations\20260211_02_admin_and_disabled_to_users.js
+
+
+Also inspect your existing migration that creates the user table:
+Get-Content .\migrations\20260211_00_initialize_notes_and_users.js
+
+
+I want to see how you define columns, foreign keys, and rollback operations.
+
+Our next goal: Create a Session table with:
+- id: automatically generated primary key.
+- token: the JWT stored in the database.
+- user_id: foreign key referencing users.id.
+The important concept to understand is this:
+One user → Multiple sessions
+User (id: 1)
+
+Kuol
+
+
+Laptop session
+
+
+Phone session
+
+
+Tablet session
+
+
+
+
+Each login creates a session. Logging out deletes the corresponding session, making that JWT unusable.
+
+Send me those two migration files, and we'll create the next one together.
+
+
+Great! Now we have confirmed that your database already supports disabled users.
+
+Your migration adds:
+await queryInterface.addColumn("users", "disabled", {
+  type: DataTypes.BOOLEAN,
+  defaultValue: false,
+});
+
+
+So we don't need another migration for disabled.
+
+Let's create the Session table.
+Step 3: Create the Session migration
+In PowerShell, run:
+New-Item .\migrations\20260211_05_create_sessions.js -ItemType File
+
+
+Open the new file in VS Code:
+code .\migrations\20260211_05_create_sessions.js
+
+
+Add this code:
+
+const { DataTypes } = require("sequelize");
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.createTable("sessions", {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      token: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+        unique: true,
+      },
+      user_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+          model: "users",
+          key: "id",
+        },
+        onDelete: "CASCADE",
+      },
+    });
+  },
+
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.dropTable("sessions");
+  },
+};
+
+
+
+Understand the important parts
+1. Why token?
+
+When someone logs in, we save their JWT in the database.
+
+For example:
+id	      token	                       user_id
+1	        JWT_TOKEN_A	                   1
+2	        JWT_TOKEN_B	                   2
+
+2. Why unique: true?
+
+Each session token must be unique. We don't want two session records sharing the same token.
+
+3. Why onDelete: "CASCADE"?
+
+If a user is deleted, their associated sessions are automatically deleted too.
+
+4. Why TEXT instead of STRING?
+
+JWTs can be relatively long. PostgreSQL TEXT is suitable for storing them.
+
+Step 4: Run the migration
+Once you have saved the file, restart your application using your normal startup command.
+
+Your connectToDatabase() already calls:
+await runMigrations();
+
+
+Umzug should automatically detect the new migration.
+
+You should see something similar to:
+Migration 20260211_05_create_sessions.js
+has been executed successfully.
+
+
+Step 5: Verify the table
+Connect to your PostgreSQL database and run:
+\d sessions
+
+
+You should see:
+- id
+- token
+- user_id
+
+Next milestone
+After confirming the migration, we'll create models/session.js and connect it to your User model.
+
+For now, complete Steps 3–5 and send me the migration output. We'll move forward only after confirming the database structure is correct.
+
+Migration successful
+Excellent! Your sessions table has been created correctly in PostgreSQL.
+
+Let's look at what you have achieved:
+Column	          Purpose	                Status
+id	              Session identifier	
+token	            Stores JWT	
+user_id	          Connects session to user	
+
+You also have:
+- A primary key on id.
+- A unique constraint on token.
+- A foreign key connecting sessions.user_id to users.id.
+- ON DELETE CASCADE to remove sessions when a user is deleted.
+The database foundation is ready.
+Step 6: Create the Session model
+The migration created the table in PostgreSQL. Now Sequelize needs a model to communicate with that table.
+
+Create the file:
+New-Item .\models\session.js -ItemType File
+
+
+Open it:
+code .\models\session.js
+
+
+Add this code to models/session.js:
+
+const { Model, DataTypes } = require("sequelize");
+const { sequelize } = require("../util/db");
+
+class Session extends Model {}
+
+Session.init(
+  {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true,
+    },
+    token: {
+      type: DataTypes.TEXT,
+      allowNull: false,
+      unique: true,
+    },
+    userId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+    },
+  },
+  {
+    sequelize,
+    underscored: true,
+    timestamps: false,
+    modelName: "session",
+  },
+);
+
+module.exports = Session;
+
+
+
+Understand one important detail
+We wrote:
+userId: {
+  type: DataTypes.INTEGER,
+  allowNull: false,
+},
+
+
+But your database column is:
+user_id
+
+
+Why does this work?
+
+Because we specified:
+underscored: true
+
+
+Sequelize converts camelCase attributes into snake_case database columns.
+- JavaScript: userId
+- PostgreSQL: user_id
+Step 7: Connect User and Session
+Open:
+code .\models\index.js
+
+
+Add the Session import:
+const Session = require("./session");
+
+
+Then add these associations:
+User.hasMany(Session);
+Session.belongsTo(User);
+
+
+Your export should also include Session:
+module.exports = {
+  Note,
+  User,
+  Team,
+  Membership,
+  UserNotes,
+  Session,
+};
+
+
+What does this relationship mean?
+User
+
+id: 1
+
+hasMany
+
+Sessions
+
+session 1 · session 2 · session 3
+
+
+One user can have multiple sessions, but each session belongs to one user.
+
+Step 8: Verify the model
+Save both files.
+
+Then run:
+node
+
+
+Inside Node.js, execute:
+const { User, Session } = require("./models");
+
+
+Then:
+await Session.findAll();
+
+
+You should get an empty array if nobody has logged in using the new session implementation yet.
+
+Send me the result.
+
+Next, we'll modify POST /api/login so that every successful login creates a session in PostgreSQL.
+
+
+Step 8: Verify the model
+Save both files.
+
+Then run:
+node
+
+
+Inside Node.js, execute:
+const { User, Session } = require("./models");
+
+
+Then:
+await Session.findAll();
+
+
+You should get an empty array if nobody has logged in using the new session implementation yet.
+
+Send me the result.
+
+Next, we'll modify POST /api/login so that every successful login creates a session in PostgreSQL.
+
+
+Session model verified
+Excellent! Your Sequelize model is communicating with PostgreSQL correctly.
+
+Look at the SQL Sequelize generated:
+SELECT "id", "token", "user_id" AS "userId"
+FROM "sessions" AS "session";
+
+
+Notice something important:
+- PostgreSQL stores user_id.
+- Sequelize exposes it as userId.
+And [] means there are currently no sessions stored. That's exactly what we expect.
+
+You've completed the database and model setup.
+Step 9: Inspect your login implementation
+Before changing login, I want to understand how you currently generate and return JWTs.
+
+First, exit Node:
+.exit
+
+
+Then run these commands in PowerShell:
+
+1. List your controllers
+Get-ChildItem .\controllers | Select-Object -ExpandProperty Name
+
+
+2. List your utility files
+Get-ChildItem .\util | Select-Object -ExpandProperty Name
+
+
+3. Show your main application file
+Get-Content .\index.js
+
+
+We'll identify your login route and authentication middleware.
+What we are going to change
+Currently, login probably does something like this:
+const token = jwt.sign(user, SECRET);
+res.status(200).send({ token, username });
+
+
+We want to extend that process:
+1. Verify username and password.
+2. Check whether the user is disabled.
+3. Generate the JWT.
+4. Save the JWT and user ID in the sessions table.
+5. Return the token to the client.
+The important principle: A successful login must create a database session.
+
+Send me those three outputs, and we'll modify your existing implementation without breaking the authentication you've already built.
+
+
+Perfect. Your project structure is clear.
+
+Your routes are separated into controllers, and your middleware is centralized in util/middleware.js. That's a good structure for this exercise.
+Step 10: Inspect login and middleware
+We need to inspect two files before making changes.
+
+1. Login controller
+
+Run:
+Get-Content .\controllers\login.js
+
+
+2. Authentication middleware
+
+Run:
+Get-Content .\util\middleware.js
+
+
+Why these two files?
+There are two important changes coming.
+
+A. Login (POST /api/login)
+
+We will save each successfully generated JWT:
+await Session.create({
+  token,
+  userId: user.id,
+});
+
+
+B. Authentication middleware
+
+Currently, your middleware probably verifies the JWT signature.
+
+We will extend it to check the database:
+const session = await Session.findOne({
+  where: { token },
+});
+
+
+If the session doesn't exist, the request must be rejected.
+
+We'll also check whether the associated user is disabled.
+Our target authentication logic
+1. Extract JWT from the request.
+2. Verify JWT signature.
+3. Find the token in the Sessions table.
+4. Check whether the user is disabled.
+5. Allow or reject the request.
+
+One important detail: We must also make sure the login process can detect disabled users despite your User model's defaultScope.
+
+Send me both files. We'll modify your existing code rather than replace it.
+
+
+Excellent. We have found two important things in your existing authentication code that we need to address.
+1. Your login code is missing a closing brace in userForToken.
+2. Your defaultScope excludes disabled users, meaning User.findOne() cannot retrieve a disabled user to check its status.
+Let's fix login first. We won't change middleware yet.
+Step 11: Update the login controller
+Open:
+code .\controllers\login.js
+
+
+Replace its contents with:
+
+const jwt = require("jsonwebtoken");
+const router = require("express").Router();
+
+const { SECRET } = require("../util/config");
+const User = require("../models/user");
+const Session = require("../models/session");
+
+router.post("/", async (request, response) => {
+  const body = request.body;
+
+  // Find the user, including disabled users
+  const user = await User.unscoped().findOne({
+    where: {
+      username: body.username,
+    },
+  });
+
+  const passwordCorrect = body.password === "secret";
+
+  if (!(user && passwordCorrect)) {
+    return response.status(401).json({
+      error: "invalid username or password",
+    });
+  }
+
+  // Prevent disabled users from logging in
+  if (user.disabled) {
+    return response.status(401).json({
+      error: "account disabled, please contact admin",
+    });
+  }
+
+  const userForToken = {
+    username: user.username,
+    id: user.id,
+  };
+
+  const token = jwt.sign(userForToken, SECRET);
+
+  // Save the active session in the database
+  await Session.create({
+    token,
+    userId: user.id,
+  });
+
+  response.status(200).send({
+    token,
+    username: user.username,
+    name: user.name,
+  });
+});
+
+module.exports = router;
+
+
+
+Step 12: Understand the changes
+There are three important changes.
+
+A. Why User.unscoped()?
+
+Previously:
+const user = await User.findOne({
+  where: { username: body.username },
+});
+
+
+Your default scope automatically applies:
+where: {
+  disabled: false,
+}
+
+
+Therefore, disabled users are invisible to that query.
+
+Using:
+User.unscoped().findOne(...)
+
+
+allows us to retrieve both enabled and disabled users.
+
+B. Why include id in the JWT?
+const userForToken = {
+  username: user.username,
+  id: user.id,
+};
+
+
+Your existing isAdmin middleware uses:
+req.decodedToken.id
+
+
+So we need the user ID in the token.
+
+C. Why save the session?
+await Session.create({
+  token,
+  userId: user.id,
+});
+
+
+This is the central part of the exercise.
+
+Previously, generating a JWT was enough. Now, a successful login must also create a database record.
+What happens after login?
+JWT generated
+
+The client receives the token.
+
+
+Session created in PostgreSQL
+
+The backend keeps a record of the active token.
+
+
+Step 13: Test login
+Save the file and start your application.
+
+Use your REST Client to send:
+POST http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "your_username",
+  "password": "secret"
+}
+
+
+Use an existing username from your database.
+
+If login succeeds, you should receive a token.
+
+Then open Node:
+node
+
+
+Execute:
+const { Session } = require("./models");
+
+
+Then:
+await Session.findAll();
+
+
+You should see a session containing the token and the corresponding userId.
+
+Next step
+Once we confirm that login creates a session, we'll update tokenExtractor.
+
+That is where the real security improvement happens: every authenticated request will need both a valid JWT and an existing database session.
+
+For now, let's verify that one successful login creates one session in PostgreSQL.
+
+
+Login and session creation working
+Excellent! Your first session has been successfully saved in PostgreSQL.
+
+Look at the important part of your result:
+{
+  id: 1,
+  token: 'eyJhbGciOiJIUzI1NiIs...',
+  userId: 3
+}
+
+
+This tells us:
+- id: 1 — the session has its own database ID.
+- token — the JWT is stored in PostgreSQL.
+- userId: 3 — the session belongs to user 3.
+You've now completed the login-side implementation.
+
+One important security detail: your JWT is a bearer credential, so avoid sharing the full token in screenshots or messages. We'll revoke this test session when we implement logout.
+Step 14: Update authentication middleware
+Now we need to make sure the server checks the database every time a user performs an authenticated action.
+
+Open:
+code .\util\middleware.js
+
+
+Replace the contents with:
+
+const jwt = require("jsonwebtoken");
+const { SECRET } = require("../util/config");
+const User = require("../models/user");
+const Session = require("../models/session");
+
+const tokenExtractor = async (req, res, next) => {
+  const authorization = req.get("authorization");
+
+  if (!authorization || !authorization.toLowerCase().startsWith("bearer ")) {
+    return res.status(401).json({ error: "token missing" });
+  }
+
+  const token = authorization.substring(7);
+
+  let decodedToken;
+
+  try {
+    decodedToken = jwt.verify(token, SECRET);
+  } catch {
+    return res.status(401).json({ error: "token invalid or expired" });
+  }
+
+  // Check whether the token exists in the sessions table
+  const session = await Session.findOne({
+    where: { token },
+  });
+
+  if (!session) {
+    return res.status(401).json({ error: "session expired or invalid" });
+  }
+
+  // Retrieve the user, including disabled users
+  const user = await User.unscoped().findByPk(session.userId);
+
+  if (!user || user.disabled || user.id !== decodedToken.id) {
+    return res.status(401).json({ error: "user disabled or session invalid" });
+  }
+
+  req.decodedToken = decodedToken;
+
+  next();
+};
+
+const isAdmin = async (req, res, next) => {
+  const user = await User.findByPk(req.decodedToken.id);
+
+  if (!user || !user.admin) {
+    return res.status(401).json({ error: "operation not allowed" });
+  }
+
+  next();
+};
+
+module.exports = { tokenExtractor, isAdmin };
+
+
+
+Understand the new authentication process
+There are three important checks.
+
+1. Verify the JWT
+decodedToken = jwt.verify(token, SECRET);
+
+
+This checks the signature and expiration.
+
+2. Check the database session
+const session = await Session.findOne({
+  where: { token },
+});
+
+
+This is the new part.
+
+If the token was deleted from PostgreSQL, the request is rejected.
+
+3. Check whether the user is disabled
+const user = await User.unscoped().findByPk(session.userId);
+
+if (!user || user.disabled || user.id !== decodedToken.id) {
+  return res.status(401).json({ error: "user disabled or session invalid" });
+}
+
+
+This ensures that disabling a user immediately prevents authenticated actions.
+
+Step 15: Test the middleware
+Save the file and restart your application.
+
+We need to test three situations:
+Situation	                                          Expected result
+Valid JWT + active session + enabled user	          200 OK
+JWT not found in Sessions	                          401 Unauthorized
+User disabled in database	                          401 Unauthorized
+
+First, let's test the normal case.
+
+Use your REST Client:
+GET http://localhost:3001/api/notes
+Authorization: Bearer YOUR_TOKEN
+
+
+Replace YOUR_TOKEN with the token returned by login.
+
+One question before we proceed: Is tokenExtractor already being used on your protected routes in controllers/notes.js and controllers/users.js?
+
+If you're unsure, send me those two files. We'll verify the middleware is actually applied before testing logout.
+
+
+Authentication test passed
+Excellent! Your request returned HTTP/1.1 200 OK.
+
+This confirms that:
+1. Your JWT is valid.
+2. The token exists in the sessions table.
+3. The associated user is enabled.
+4. The protected /api/notes route accepts the request.
+Your database-backed authentication is working for this test.
+Step 16: Test session revocation manually
+Before implementing the logout route, let's prove that deleting a session makes its token unusable.
+
+You are currently inside the project folder. Exit Node if you're still in its console:
+.exit
+
+
+Start Node again:
+node
+
+
+Run:
+const { Session } = require("./models");
+
+
+Find your session:
+const session = await Session.findByPk(1);
+
+
+Delete it:
+await session.destroy();
+
+However, your output shows a DELETE query, which is unusual. Let's verify the database directly.
+
+Run:
+await Session.findAll({
+  attributes: ["id", "userId"],
+});
+
+
+If ID 3 is absent, it has already been deleted.
+
+Remember: Always check whether a record exists before calling .destroy():
+const session = await Session.findByPk(3);
+
+if (session) {
+  await session.destroy();
+  console.log("Session deleted");
+} else {
+  console.log("Session does not exist");
+}
+
+
+Now return to REST Client and repeat the exact same request:
+GET http://localhost:3001/api/notes
+Authorization: Bearer YOUR_OLD_TOKEN
+
+
+Expected result
+HTTP/1.1 401 Unauthorized
+
+
+The important lesson:
+
+The JWT itself has not changed or expired. But the database session has been deleted, so the server no longer accepts it.
+
+This is exactly what server-side sessions achieve.
+
+Send me the result of this test. Then we'll implement the actual DELETE /api/logout route, which will delete the current user's session automatically.
+
+
+No worries. This is a small issue, and the error tells us exactly what happened.
+Cannot read properties of null (reading 'destroy')
+
+
+It means:
+session === null
+
+
+In other words, Sequelize couldn't find a session with the ID you requested.
+
+Remember, earlier we had:
+{
+  id: 1,
+  userId: 3
+}
+
+
+But let's not assume that session still exists.
+Step 16.1: Check existing sessions
+In your Node console, run:
+const sessions = await Session.findAll();
+
+
+Look at the session IDs.
+Step 16.2: Delete the session safely
+If the result contains a session, run:
+const session = sessions[0];
+
+
+Check it:
+session.id;
+
+
+Then delete it:
+await session.destroy();
+
+
+Alternatively, you can delete it directly:
+await Session.destroy({
+  where: { id: sessions[0].id },
+});
+
+
+Step 16.3: Test the old token
+Return to REST Client and send the same request with the original JWT:
+GET http://localhost:3001/api/notes
+Authorization: Bearer YOUR_OLD_TOKEN
+
+
+Expected:
+HTTP/1.1 401 Unauthorized
+
+
+A small debugging lesson: findByPk() returns either a model instance or null. Always check whether the record exists before calling .destroy().
+
+Send me the output of await Session.findAll() first if you're unsure which session to delete.
+
+
+The important clue is this line:
+Executing (default): SELECT ... FROM "sessions" ... WHERE "session"."id" = 3;
+
+
+Session.findByPk(3) returned null. That means there is no session with ID 3 in the database your Node REPL is connected to.
+
+Also, session.destroy() fails because session is null. We need to find the actual session ID before deleting anything.
+Step 1: Check the existing sessions
+In your current Node REPL, run:
+(await Session.findAll()).map(s => ({
+  id: s.id,
+  userId: s.userId,
+}));
+
+
+This displays only the session IDs and user IDs, not the sensitive JWT tokens.
+Step 2: What should happen?
+- If you see one or more sessions, we'll delete one using its actual ID.
+- If you see [], there are currently no active sessions. Log in again through REST Client to create one.
+Send me the output, and we'll continue with the logout test.
+
+
+Excellent! We found the actual session:
+[ { id: 1, userId: 3 } ]
+
+
+You were trying to find ID 3, but the session's ID is 1. The user's ID is 3 — these are two different IDs.
+Step 2: Delete the session
+Run this in your Node REPL:
+await Session.destroy({
+  where: { id: 1 },
+});
+
+
+Expected result:
+1
+
+
+That means one session was deleted.
+Step 3: Test the old token
+Go back to REST Client and send the same authenticated request:
+GET http://localhost:3001/api/notes
+Authorization: Bearer YOUR_OLD_TOKEN
+
+
+Expected
+ HTTP 401 Unauthorized
+
+Why? Your JWT may still be correctly signed, but its session no longer exists in the database. Therefore, the middleware rejects it.
+
+Send me the result. Then we'll implement DELETE /api/logout.
+
+
+Good test. The database confirms that the session was deleted:
+DELETE FROM "sessions" WHERE "id" = 1
+
+
+The result 1 means one row was removed.
+
+But your GET /api/notes still returns 200 OK. That tells us something important: the notes route may not be running the updated tokenExtractor middleware.
+
+Remember, deleting a session does not automatically invalidate a JWT. Your middleware must check the database for that token on every protected request.
+Step 1: Check your notes route
+Open controllers/notes.js and show me the code where you define the GET route, especially this part:
+router.get("/", ...)
+
+
+Also show me how you export the router at the bottom.
+
+We'll check whether tokenExtractor is actually being used before the route handler. Don't change anything yet.
+
+We found the problem! Your controllers/notes.js does not currently use tokenExtractor anywhere.
+
+That explains why deleting the session did not affect GET /api/notes: Express is allowing the request to reach the route without checking the session.
+
+Let's fix this step by step.
+Step 1: Import the middleware
+At the top of controllers/notes.js, add:
+const { tokenExtractor } = require("../util/middleware");
+
+
+Step 2: Protect the routes
+Add tokenExtractor as middleware before each route handler that requires authentication.
+
+For example, change:
+router.get("/", async (req, res) => {
+
+
+to:
+router.get("/", tokenExtractor, async (req, res) => {
+
+
+Do the same for these routes:
+router.post("/", tokenExtractor, async (req, res) => {
+
+router.get("/:id", tokenExtractor, noteFinder, async (req, res) => {
+
+router.put("/:id", tokenExtractor, noteFinder, async (req, res) => {
+
+router.delete("/:id", tokenExtractor, noteFinder, async (req, res) => {
+
+
+Understand the order:
+Incoming request
+      |
+      v
+tokenExtractor
+      |
+      v
+Check JWT signature
+      |
+      v
+Check session in database
+      |
+      v
+Check user is enabled
+      |
+      v
+Route handler
+      |
+      v
+Response
+
+
+If the session doesn't exist, the request stops at tokenExtractor and returns 401.
+Step 3: Test again
+Save the file and restart your server.
+
+Then send the same request with the old token:
+GET http://localhost:3001/api/notes
+Authorization: Bearer YOUR_OLD_TOKEN
+
+
+Expected result:
+HTTP/1.1 401 Unauthorized
+
+
+One more important point: the SQL statement you pasted into Node REPL caused a syntax error because SQL commands aren't JavaScript. Your Sequelize Session.destroy() command was the correct way to delete the session.
+
+For now, make these changes and test again. Then we'll work on DELETE /api/logout.
+
+
+Session validation working
+Excellent! This is exactly the result we wanted:
+HTTP/1.1 401 Unauthorized
+{
+  "error": "session expired or invalid"
+}
+
+
+You've now confirmed an important security concept:
+- A JWT can still have a valid signature.
+- But if its session has been deleted from PostgreSQL, the middleware rejects it.
+- Therefore, deleting a session revokes access even if someone still has the old token.
+Your tokenExtractor is now protecting the notes routes correctly.
+Next: Implement DELETE /api/logout
+Now let's make it possible for a user to log out through an HTTP request rather than manually deleting sessions from PostgreSQL.
+Step 1: Update util/middleware.js
+Inside tokenExtractor, find this part near the end:
+req.decodedToken = decodedToken;
+next();
+
+
+Change it to:
+req.decodedToken = decodedToken;
+req.token = token;
+next();
+
+
+Why? We're saving the authenticated token on the request so the logout controller can identify exactly which session to delete.
+Step 2: Create controllers/logout.js
+Create a new file called logout.js inside your controllers folder.
+
+Add:
+
+const router = require("express").Router();
+
+const { tokenExtractor } = require("../util/middleware");
+const { Session } = require("../models");
+
+router.delete("/", tokenExtractor, async (req, res) => {
+  await Session.destroy({
+    where: {
+      token: req.token,
+    },
+  });
+
+  res.status(204).end();
+});
+
+module.exports = router;
+
+
+
+Notice that tokenExtractor runs before the logout handler. This ensures only a currently valid session can log out.
+Step 3: Mount the route
+Open index.js and add:
+const logoutRouter = require("./controllers/logout");
+
+
+Then, alongside your other app.use() routes, add:
+app.use("/api/logout", logoutRouter);
+
+
+Step 4: Test it
+First, log in again through REST Client to obtain a fresh token, because we deleted the previous session.
+
+Then send:
+DELETE http://localhost:3001/api/logout
+Authorization: Bearer YOUR_NEW_TOKEN
+
+
+Expected response:
+HTTP/1.1 204 No Content
+
+
+After that, try GET /api/notes with the same token. It should return 401 Unauthorized.
+
+Let's complete this test before moving on.
+
+
+All tests passed!
+Excellent! Your logout functionality is working correctly.
+
+You've verified the complete session lifecycle:
+Operation	                   Result
+Login	                       200 OK — token created
+Session saved in PostgreSQL	 Success
+Authenticated request	       200 OK
+Logout	                     204 No Content
+Reuse old token	             401 Unauthorized
+
+What you've learned
+The important difference is that JWT authentication alone is not enough in this implementation.
+
+Your application now checks two things:
+1. Is the JWT valid?
+2. Does its session still exist in PostgreSQL, and is the user enabled?
+If either check fails, access is rejected.
+
+Next: We should verify that the same middleware protects all other authenticated operations, not just notes, and then review the remaining Exercise 25 requirements.
+
+
+Let's continue with one small check.
+
+Next, open controllers/users.js and share its code here.
+
+We'll check that:
+- Protected user operations use tokenExtractor.
+- Admin-only operations use isAdmin.
+- Disabled users cannot perform authenticated actions.
+Then we'll compare everything against the Exercise 25 requirements.
+
+
+Good! Your users.js reveals two important things we need to fix before considering Exercise 25 complete.
+1. Some routes are not protected
+Let's review your routes:
+Route	            Current protection	      Observation
+GET /	            None	                    Public, if intended
+POST /	          None	                    Can remain public for registration
+PUT /:id	        None	                    Should require authentication
+GET /:id	        None	                    Public, if intended
+PUT /:username	  tokenExtractor, isAdmin	  Has a routing conflict
+
+Public access to GET and registration routes can be intentional. However, updating user information should not be open to everyone.
+
+
+Perfect. That's a good separation of responsibilities:
+- Ordinary users: Can manage their own profiles, but cannot change another user's profile or administrative permissions.
+- Admins: Can manage their own profiles and other users' profiles, and can enable or disable accounts.
+Let's implement this without changing your existing user registration or GET routes.
+Step 1: Protect the general user update route
+In controllers/users.js, replace your existing router.put("/:id", ...) with:
+
+router.put("/:id", tokenExtractor, async (req, res) => {
+  // Find the user whose profile is being updated
+  const user = await User.unscoped().findByPk(req.params.id);
+
+  if (!user) {
+    return res.status(404).end();
+  }
+
+  // Find the person making the request
+  const loggedInUser = await User.findByPk(req.decodedToken.id);
+
+  if (!loggedInUser) {
+    return res.status(401).json({ error: "user not found" });
+  }
+
+  // Allow admins to update anyone.
+  // Ordinary users can update only themselves.
+  if (!loggedInUser.admin && loggedInUser.id !== user.id) {
+    return res.status(403).json({
+      error: "you can only update your own profile",
+    });
+  }
+
+  // Only allow profile fields to be updated here.
+  const updatedFields = {};
+
+  if (req.body.name !== undefined) {
+    updatedFields.name = req.body.name;
+  }
+
+  if (req.body.username !== undefined) {
+    updatedFields.username = req.body.username;
+  }
+
+  await user.update(updatedFields);
+
+  res.json(user);
+});
+
+
+
+Notice that we use 403 Forbidden when a user tries to update somebody else's profile.
+Step 2: Keep admin responsibilities separate
+Your admin route should remain separate:
+router.put(
+  "/:username/disable",
+  tokenExtractor,
+  isAdmin,
+  async (req, res) => {
+    // Your existing disable/enable logic
+  },
+);
+
+
+This means an ordinary user cannot disable another account or enable their own account.
+Step 3: Understand the permission checks
+Ordinary user
+Update own profile
+
+Update another user's profile
+
+Disable another account
+
+
+Administrator
+Update own profile
+
+Update another user's profile
+
+Enable or disable accounts
+
+
+Step 4: Test before moving forward
+After saving, restart your server.
+
+Test these scenarios:
+1. Log in as an ordinary user and update their own profile — expect 200.
+2. Use that user's token to update another user's profile — expect 403.
+3. Log in as an admin and update another user's profile — expect 200.
+One important detail: this implementation deliberately does not allow profile updates to change admin or disabled. Those permissions remain controlled by the appropriate administrative operations.
+
+Let's test these three scenarios before we move on.
+
+Let's test it step by step using REST Client.
+Test 1: Find your users and identify the admin
+Open PowerShell in your project:
+node
+
+
+Run:
+const { User } = require("./models");
+
+(await User.unscoped().findAll({
+  attributes: ["id", "username", "admin", "disabled"],
+})).map(u => u.toJSON());
+
+
+You should see something like:
+[
+  { id: 1, username: "admin", admin: true, disabled: false },
+  { id: 3, username: "nyuel", admin: false, disabled: false }
+]
+
+
+Those are just example values; use your actual results.
+
+
+Great! We have three users, and all three currently have admin: false.
+
+That means we can test ordinary-user permissions now, but we'll need to promote one account to admin before testing admin permissions.
+Test 1: Log in as Nyuel
+In REST Client:
+POST http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "nyuel",
+  "password": "secret"
+}
+
+
+Copy the new token from the response.
+Test 2: Nyuel updates their own profile
+Use the token you just received:
+PUT http://localhost:3001/api/users/3
+Authorization: Bearer YOUR_TOKEN
+Content-Type: application/json
+
+{
+  "name": "Nyuel Updated"
+}
+
+
+Expected
+ 200 OK
+Test 3: Nyuel tries to update another user
+PUT http://localhost:3001/api/users/2
+Authorization: Bearer YOUR_TOKEN
+Content-Type: application/json
+
+{
+  "name": "Unauthorized Update"
+}
+
+
+Expected
+ 403 Forbidden
+
+This confirms that Nyuel cannot update Jakousa's profile.
+
+Do these two tests first and send me the results. Afterward, we'll promote one account to admin safely and test the administrator's responsibilities.
+
+
+Excellent! 403 Forbidden
+
+
+That confirms Nyuel cannot update another user's profile.
+
+Have you also tested updating Nyuel's own profile with PUT /api/users/3? That should return 200 OK.
+Next: Promote an admin account
+Currently, all three users have admin: false. Let's promote Kuol (ID 1) for our admin tests.
+
+In your Node REPL, run:
+const kuol = await User.unscoped().findByPk(1);
+
+kuol.admin = true;
+await kuol.save();
+
+
+Verify:
+(await User.unscoped().findByPk(1)).admin;
+
+
+Expected:
+true
+
+
+This is a development setup step. In production, admin privileges should be assigned through a controlled administrative process.
+
+Then we'll log in as Kuol and test updating another user's profile and disabling an account.
+
+Perfect! Your database now confirms:
+User	            ID	  Admin	     Disabled
+jakousa	          2	    No	       No
+nyuel	            3	    No	       No
+kuol	            1	    Yes	       No
+
+Admin account ready
+Test 4: Log in as Kuol (admin)
+In REST Client:
+POST http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "kuol",
+  "password": "secret"
+}
+
+
+Copy the new token.
+Test 5: Admin updates another user's profile
+PUT http://localhost:3001/api/users/2
+Authorization: Bearer YOUR_ADMIN_TOKEN
+Content-Type: application/json
+
+{
+  "name": "Jakousa Updated By Admin"
+}
+
+
+Expected: 200 OK.
+Test 6: Admin disables Nyuel
+PUT http://localhost:3001/api/users/nyuel/disable
+Authorization: Bearer YOUR_ADMIN_TOKEN
+Content-Type: application/json
+
+{
+  "disabled": true
+}
+
+
+Expected: 200 OK, with "disabled": true.
+Test 7: Disabled user attempts to log in
+POST http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "nyuel",
+  "password": "secret"
+}
+
+
+Expected: 401 Unauthorized.
+
+Try these tests in order. They verify both admin permissions and disabled-account protection.
+
+
+Existing-token protection working
+Excellent! This is another important security test passed.
+{
+  "error": "user disabled or session invalid"
+}
+
+
+It confirms that even if Nyuel has an old JWT, your middleware checks the user's current status in PostgreSQL and rejects the request.
+What we have verified
+Security feature	                            Result
+Login creates a session	                      Passed
+Valid session accesses protected routes	      Passed
+Deleted session rejects old token	            Passed
+Logout deletes current session	              Passed
+Ordinary user updates own profile	            To confirm
+Ordinary user cannot update another profile	  Passed
+Admin can manage other users	                Continue verifying
+Disabled user cannot log in	                  Passed
+Disabled user's old token is rejected	        Passed
+
+Next: Re-enable Nyuel
+Log in as Kuol (admin) and send:
+PUT http://localhost:3001/api/users/nyuel/disable
+Authorization: Bearer YOUR_ADMIN_TOKEN
+Content-Type: application/json
+
+{
+  "disabled": false
+}
+
+
+Expected: 200 OK, with "disabled": false.
+
+Then we'll make a final review of your Exercise 25 code and test anything still missing.
+
+
+
+Ah! You've discovered an important Sequelize concept: default scopes.
+
+Your User model has:
+defaultScope: {
+  where: {
+    disabled: false,
+  },
+},
+
+
+This means Sequelize automatically hides disabled users from normal queries.
+
+So when you run:
+const user = await User.findOne({
+  where: {
+    username: req.params.username,
+  },
+});
+
+
+Sequelize effectively searches for:
+WHERE username = 'nyuel'
+AND disabled = false
+
+
+But Nyuel has disabled = true, so Sequelize returns null, and your route responds with 404.
+Fix: Use User.unscoped()
+In your admin disable/enable route, change:
+const user = await User.findOne({
+
+
+to:
+const user = await User.unscoped().findOne({
+
+
+Your complete route should be:
+router.put(
+  "/:username/disable",
+  tokenExtractor,
+  isAdmin,
+  async (req, res) => {
+    const user = await User.unscoped().findOne({
+      where: {
+        username: req.params.username,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).end();
+    }
+
+    user.disabled = req.body.disabled;
+    await user.save();
+
+    res.json(user);
+  },
+);
+
+
+Why this works
+- User.findOne() finds enabled users only.
+- User.unscoped().findOne() finds both enabled and disabled users.
+Now retry your request using Kuol's admin token:
+PUT http://localhost:3001/api/users/nyuel/disable
+Authorization: Bearer YOUR_ADMIN_TOKEN
+Content-Type: application/json
+
+{
+  "disabled": false
+}
+
+
+Expected: 200 OK, with "disabled": false.
+
+This is a useful lesson: default scopes are convenient for hiding disabled accounts, but administrative operations sometimes need to bypass them.
+
+
+Final permission test
+Let's confirm that an ordinary user can update their own profile after being re-enabled.
+
+Log in as Nyuel again:
+POST http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "nyuel",
+  "password": "secret"
+}
+
+
+Then update their own profile:
+PUT http://localhost:3001/api/users/3
+Authorization: Bearer YOUR_NEW_TOKEN
+Content-Type: application/json
+
+{
+  "name": "Nyuel Juol"
+}
+
+
+Expected: 200 OK.
+
+After this, we'll review your complete Exercise 25 implementation, including any remaining security improvements before submission.
+
+
+In PowerShell, run:
+Get-ChildItem .\controllers -Name
+
+
+To show files and subfolders recursively:
+Get-ChildItem .\controllers -Recurse
+
+
+Own-profile update passed
+Excellent! Nyuel successfully updated their own profile and received 200 OK.
+
+You've now verified these permission rules:
+Test	                         Expected	      Result
+User updates own profile	     200	          Passed
+User updates another profile	 403	          Passed
+Admin updates another profile	 200	          Passed
+Admin disables account	       200	          Passed
+Disabled user logs in	         401	          Passed
+Disabled user's old token	     401	          Passed
+Admin re-enables account	     200	          Passed
+Logout invalidates token       401 afterward	Passed
+
+Your index.js looks correct. Route configuration passed
+
+
+Let's check the important parts:
+Configuration	                                     Status
+express.json() before routes	                     Correct
+Notes router mounted	                             Correct
+Users router mounted	                             Correct
+Login router mounted	                             Correct
+Logout router mounted	                             Correct
+Database connection before server starts	         Correct
+Migrations run through connectToDatabase()	       Correct
+
+Your login and logout routes are mounted correctly. The order of those two routes does not cause a problem because they have different paths.
+
+
+Current review
+Component	                            Status
+Login and JWT creation	              Working
+Session model and migration	          Working
+JWT verification	                    Correct
+Session existence check	              Working
+Disabled-user protection	            Working
+Logout and session deletion	          Working
+Admin authorization	                  Working
+Async error handling	                Needs version check
+
+
+One small improvement: use HTTP 403 Forbidden instead of 401 when a logged-in user lacks administrator privileges.
+5. One technical improvement
+Your middleware performs database queries asynchronously. If a database query fails, the error should be forwarded to Express error handling.
+
+Whether Express automatically handles rejected async middleware depends on your Express version.
+
+Let's check your version before changing anything.
+
+Run:
+npm list express
+
+Great! You're using Express 5.3.0.
+Async error handling supported
+Express 5 automatically forwards rejected promises from asynchronous route handlers and middleware to your error-handling middleware.
+
+That means your current code:
+const tokenExtractor = async (req, res, next) => {
+  // database queries
+};
+
+
+does not need a try/catch just to forward database errors to Express.
+One small improvement
+Change the admin authorization response from 401 to 403:
+if (!user || !user.admin) {
+  return res.status(403).json({
+    error: "operation not allowed",
+  });
+}
+
+
+Why?
+- 401 Unauthorized: The request lacks valid authentication.
+- 403 Forbidden: The user is authenticated but lacks permission.
+Next: Review your logout controller
+Run:
+Get-Content .\controllers\logout.js
+
+
+We'll make sure it deletes only the current user's session and handles logout correctly.
+
+Then verify your location:
+Get-Location
+
+Perfect. Then your middleware order is correct.
+app.use(express.json());
+app.use(tokenExtractor);
+
+
+This means every incoming request passes through tokenExtractor first.
+
+For example:
+
+REST Client request
+       |
+       v
+express.json()
+       |
+       v
+tokenExtractor
+       |
+       |-- Extracts JWT
+       |-- Stores it in req.token
+       |
+       v
+Protected route
+       |
+       v
+userExtractor
+       |
+       |-- Verifies JWT
+       |-- Finds user
+       |-- Checks sessions table
+       |
+       v
+     Success
+
+
+Actually, it has deleted successfully. The confusing part is the difference between the first deletion and the second deletion.
+
+Let's examine your output.
+1. First deletion
+await session.destroy();
+
+
+SQL:
+DELETE FROM "sessions" WHERE "id" = 1
+
+
+The [] is the Node REPL's display of the Sequelize instance's destroyed/empty state. It does not mean deletion failed.
+2. Second deletion
+await Session.destroy({
+  where: { id: 1 },
+});
+
+
+Result:
+0
+
+
+This means zero rows were deleted because session ID 1 had already been deleted.
+3. Your remaining database records
+[ { id: 2, userId: 1 } ]
+
+
+Session 1 deleted
+Session 2 still exists.
+4. Let's test the actual exercise
+Instead of deleting by ID, let's delete the session using the JWT token.
+
+First, inspect the remaining session:
+const sessions = await Session.findAll();
+sessions.map(s => ({
+  id: s.id,
+  userId: s.userId,
+  token: s.token,
+}));
+
+
+Copy the token for session 2.
+
+Then:
+await Session.destroy({
+  where: { token: "PASTE_TOKEN_HERE" },
+});
+
+
+Expected result:
+1
+
+
+Now try creating a blog using that same token in REST Client.
+
+Expected: HTTP 401.
+
+The important lesson: Session.destroy() returns the number of database rows deleted. 1 means one row deleted; 0 means no matching row existed.
+
+You're not doing anything wrong with PostgreSQL here.
+
+
+Your final technical understanding
+Here is how I would recommend explaining the entire exercise to another developer:
+Server-side session authentication
+
+In this exercise, I implemented server-side session management using JWT, Sequelize and PostgreSQL.
+
+When a user logs in successfully, the server generates a signed JWT and saves it together with the user's ID in the sessions table.
+
+For protected requests, the server extracts the token from the Authorization header, verifies its signature, identifies the user and checks whether the token exists in the sessions table.
+
+When the user logs out, the server deletes the corresponding session from PostgreSQL. This invalidates that login even if the JWT has not reached its expiration time.
+
+One final thing: My assessment
+Area	                             Assessment
+JWT understanding	                 Good foundation
+Database sessions	                 Good understanding
+Logout and invalidation	           Very good
+Explaining technical concepts	     Improving
+
+My advice: Don't rush to memorize these explanations. Understand the sequence:
+
+Login → Generate JWT → Save session → Verify JWT → Check session → Logout → Delete session.
+
+That sequence is the mental model you should carry forward.
+
+
+Good catch! This is an important requirement, and I recommend adding it before you request peer review.
+
+I checked the previous context of your blog project. Your part13-blog users table originally had:
+- id
+- username
+- name
+- password_hash
+- created_at
+- updated_at
+It did not have a disabled column.
+
+You already have this check in your login code:
+if (user.disabled) {
+  return response.status(403).json({
+    error: "account disabled, please contact admin",
+  });
+}
+
+
+But without the database column, user.disabled won't contain the value you expect.
+
+Let's implement the missing requirement properly.
+Step 1. Create a new migration
+Do not edit your original initialization migration. Your database already has that migration recorded.
+
+Create a new migration in your migrations folder, following your existing naming convention:
+
+..._add_disabled_to_users.js
+
+Use this migration code:
+
+const { DataTypes } = require("sequelize");
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.addColumn("users", "disabled", {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    });
+  },
+
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.removeColumn("users", "disabled");
+  },
+};
+
+
+
+Why these settings?
+- BOOLEAN: stores true or false.
+- defaultValue: false: every existing user remains enabled by default.
+- allowNull: false: every user must have a definite enabled/disabled state.
+- down: allows you to reverse the migration.
+Step 2. Update your User model
+Open models/user.js and add this field inside User.init():
+disabled: {
+  type: DataTypes.BOOLEAN,
+  allowNull: false,
+  defaultValue: false,
+},
+
+
+Make sure you don't accidentally add it outside the model's attributes.
+Step 3. Run your migration
+Start your application using:
+npm start
+
+
+Your Umzug migration setup should detect and execute the new migration.
+
+Verify the database:
+SELECT id, username, disabled
+FROM users;
+
+
+Expected example:
+id	username	disabled
+1	johnsmith	false
+2	mary	false
+
+Step 4. Disable and enable users directly from PostgreSQL
+This is exactly what the exercise requests. You don't need to build an admin interface.
+
+Disable a user:
+UPDATE users
+SET disabled = true
+WHERE username = 'johnsmith';
+
+
+Enable the user again:
+UPDATE users
+SET disabled = false
+WHERE username = 'johnsmith';
+
+
+Step 5. Add one more protection to your middleware
+You already check disabled users during login. That's good.
+
+However, consider this situation:
+1. John logs in successfully.
+2. John receives a JWT and an active session.
+3. An administrator disables John directly in PostgreSQL.
+4. John still has his old JWT.
+Your current userExtractor checks the session, but doesn't check whether the user has subsequently been disabled.
+
+Add this after finding the user:
+const user = await User.findByPk(decodedToken.id);
+
+if (!user) {
+  return response.status(401).json({
+    error: "user not found",
+  });
+}
+
+if (user.disabled) {
+  return response.status(403).json({
+    error: "account disabled",
+  });
+}
+
+
+This ensures disabling an account also prevents access through existing sessions.
+
+Final testing checklist
+Disabled-user requirement
+0/6 completed
+
+
+
+[ ] New migration adds disabled column
+[ ] User model includes disabled field
+[ ] Existing users default to disabled = false
+[ ] Login rejects disabled users with HTTP 403
+[ ] Existing sessions cannot access protected routes after account is disabled
+[ ] Enabling the user restores access if their session still exists
+
+One important detail: Enabling the user again does not restore a session that was deleted. In this implementation, it restores access only if the original session still exists and the JWT is still valid.
+
+
+
+Let's break down your JWT token. First, one small correction: signature, not signiture.
+
+A JWT (JSON Web Token) has three parts separated by two dots (.):
+Your JWT structure
+1. Header
+
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+
+2. Payload
+
+eyJ1c2VybmFtZSI6InNlY29uZHRlc3R1c2VyQGdtYWlsLmNvbSIsImlkIjoyLCJpYXQiOjE3OTM5NDgxNDB9
+
+3. Signature
+
+j_O8WggEmcP7eoaOOCc1mgChG9gShlqd4f1uRDYMJ2E
+
+
+1. Header — what algorithm is used?
+When decoded, your header becomes:
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+
+
+- alg: The algorithm used to sign the token.
+- HS256: HMAC using SHA-256.
+- typ: The token type, JWT.
+Think of this as identifying the security method used to create the token.
+2. Payload — what information is inside?
+Your payload decodes to:
+{
+  "username": "secondtestuser@gmail.com",
+  "id": 2,
+  "iat": 1793948140
+}
+
+
+Let's understand each property:
+Property	             Meaning
+username	             The user's username
+id	                   The user's database ID
+iat	                   Issued At — when the token was created, as a Unix timestamp
+
+Important: The payload is encoded, not encrypted. Anyone who has the token can decode and read it. Never put passwords or secrets inside it.
+3. Signature — the most important part
+This is the signature:
+j_O8WggEmcP7eoaOOCc1mgChG9gShlqd4f1uRDYMJ2E
+
+
+Your backend creates this signature using three things:
+1. The encoded header.
+2. The encoded payload.
+3. Your secret key (SECRET).
+Conceptually, it works like this:
+signature = HMAC_SHA256(
+  encodedHeader + "." + encodedPayload,
+  SECRET
+);
+
+
+The signature acts like a tamper detector.
+
+Imagine someone changes the payload:
+{
+  "username": "secondtestuser@gmail.com",
+  "id": 2,
+  "admin": true
+}
+
+
+They cannot simply change the payload and keep the original signature. When your backend verifies the token, the signature will not match.
+4. How your backend verifies it
+In your project, you have:
+decodedToken = jwt.verify(request.token, SECRET);
+
+
+The jsonwebtoken library:
+1. Reads the header and payload.
+2. Uses your SECRET to calculate the expected signature.
+3. Compares it with the signature attached to the token.
+4. Rejects the token if verification fails.
+If verification succeeds, it returns the decoded payload.
+5. How this connects to your session table
+Remember, your project has another security check:
+const session = await Session.findOne({
+  where: { token: request.token },
+});
+
+if (!session) {
+  return response.status(401).json({
+    error: "session expired or invalid",
+  });
+}
+
+
+This gives you two separate checks:
+Request arrives with JWT
+Check 1: Signature
+
+Is the JWT authentic and valid?
+
+
+Check 2: Database session
+
+Does this token still exist in the sessions table?
+
+
+Allow request if both checks pass
+
+And now you have a third check:
+
+Is the user disabled?
+if (user.disabled) {
+  return response.status(403).json({
+    error: "account disabled",
+  });
+}
+
+
+So remember:
+- Signature: Is this token authentic?
+- Session: Is this login session still active?
+- Disabled: Is this user allowed to access the application?
+
+
+blog_test_db=> SELECT * FROM migrations ORDER BY name;
+                   name                   
+------------------------------------------
+ 2026211_00_initialize_blogs_and_users.js
+(1 row)
+
+blog_test_db=> SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'blogs'
+ORDER BY ordinal_position;
+ column_name |        data_type         
+-------------+--------------------------
+ id          | integer
+ title       | character varying
+ author      | text
+ url         | text
+ likes       | integer
+ created_at  | timestamp with time zone
+ updated_at  | timestamp with time zone
+ user_id     | integer
+ year        | integer
+(9 rows)
+
+blog_test_db=> INSERT INTO migrations (name)
+VALUES ('2026211_01_add_year_to_blogs.js');
+SSL error: unexpected eof while reading
+The connection to the server was lost. Attempting reset: Succeeded.
+SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, compression: off, ALPN: postgresql)
+blog_test_db=> SELECT * FROM migrations ORDER BY name;
+                   name                   
+------------------------------------------
+ 2026211_00_initialize_blogs_and_users.js
+(1 row)
+
+blog_test_db=> INSERT INTO migrations (name)
+VALUES ('2026211_01_add_year_to_blogs.js');
+INSERT 0 1
+blog_test_db=> SELECT * FROM migrations ORDER BY name;
+                   name                   
+------------------------------------------
+ 2026211_00_initialize_blogs_and_users.js
+ 2026211_01_add_year_to_blogs.js
+(2 rows)
+
+blog_test_db=> ^C
+blog_test_db=> SELECT * FROM migrations ORDER BY name;
+                   name                   
+------------------------------------------
+ 2026211_00_initialize_blogs_and_users.js
+ 2026211_01_add_year_to_blogs.js
+(2 rows)
+
+blog_test_db=> \d reading_lists
+blog_test_db=> \d reading_lists
+blog_test_db=> SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'reading_lists';
+blog_test_db=> INSERT INTO migrations (name)
+VALUES ('2026211_02_create_reading_lists.js');
+INSERT 0 1
+blog_test_db=> SELECT * FROM migrations ORDER BY name;
+                   name                   
+------------------------------------------
+ 2026211_00_initialize_blogs_and_users.js
+ 2026211_01_add_year_to_blogs.js
+ 2026211_02_create_reading_lists.js
+(3 rows)
+
+blog_test_db=> 

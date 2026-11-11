@@ -1,0 +1,122 @@
+PUT http://localhost:3001/api/users/3
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im55dWVsIiwiaWQiOjMsImlhdCI6MTc5NDMwNzc1Mn0.MFYeOvlOBpTEOcTRnad4zh03YbAOj61JrDuZXNxCK4A
+Content-Type: application/json
+
+{
+  "name": "Nyuel Juol"
+}
+
+
+# POST http://localhost:3001/api/login
+# Content-Type: application/json
+
+# {
+#   "username": "nyuel",
+#   "password": "secret"
+# }
+
+
+# PUT http://localhost:3001/api/users/nyuel/disable
+# Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Imt1b2wiLCJpZCI6MSwiaWF0IjoxNzk0MzA2MTg4fQ.Vxj2FofzGarqOgyNLibu8eYajQgwelkurPpn0CLTD3I
+# Content-Type: application/json
+
+# {
+#   "disabled": false
+# }
+
+
+
+# POST http://localhost:3001/api/login
+# Content-Type: application/json
+
+# {
+#   "username": "nyuel",
+#   "password": "secret"
+# }
+
+
+
+# PUT http://localhost:3001/api/users/nyuel/disable
+# Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Imt1b2wiLCJpZCI6MSwiaWF0IjoxNzk0MzA2MTg4fQ.Vxj2FofzGarqOgyNLibu8eYajQgwelkurPpn0CLTD3I
+# Content-Type: application/json
+
+# {
+#   "disabled": true
+# }
+
+
+
+
+
+
+
+
+
+
+# PUT http://localhost:3001/api/users/2
+# Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Imt1b2wiLCJpZCI6MSwiaWF0IjoxNzk0MzA2MTg4fQ.Vxj2FofzGarqOgyNLibu8eYajQgwelkurPpn0CLTD3I
+# Content-Type: application/json
+
+# {
+#   "name": "Jakousa Updated By Admin"
+# }
+
+
+
+
+# POST http://localhost:3001/api/login
+# Content-Type: application/json
+
+# {
+#   "username": "kuol",
+#   "password": "secret"
+# }
+
+
+
+
+
+
+
+
+# PUT  http://localhost:3001/api/users/2
+# Content-Type: application/json
+# Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im55dWVsIiwiaWQiOjMsImlhdCI6MTc5NDMwNTA5Mn0.4KEdeFPuxV4nYAd9JrooQx6P7CKnawpn6GyP36x5xd0
+
+# {
+#   "name": "Nyuel Juol Thenk"
+# }
+
+
+
+
+# Year greater than 2026 (should fail)
+# {
+#   "title": "Future Blog",
+#   "author": "Kuol",
+#   "url": "https://example.com",
+#   "likes": 5,
+#   "year": 2027
+# }
+
+# {
+#   "username": "kuol@domain.com",
+#   "password": "password"
+# }
+# Year below 1991 (should fail)
+# {
+#   "title": "Old Blog",
+#   "author": "Kuol",
+#   "url": "https://example.com",
+#   "likes": 5,
+#   "year": 1990
+# }
+
+
+#  "password": "password"
+
+# {
+#   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Imt1b2xAZG9tYWluLmNvbSIsImlkIjoxLCJpYXQiOjE3OTM3NzgwNzR9.zomVevT-9ODig_18BB0M3NeWQPGSDRWYTX0MI1g_Y3I",
+#   "username": "kuol@domain.com",
+#   "name": "Kuol"
+# }

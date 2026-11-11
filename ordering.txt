@@ -1,0 +1,216 @@
+Exercise 15 introduces ordering (sorting) in Sequelize.
+
+The requirement is to return blogs with the highest number of likes first.
+1. What does descending order mean?
+Imagine your database contains:
+Blog	Likes
+PostgreSQL Basics	5
+React Fundamentals	20
+JavaScript Introduction	10
+
+After ordering by likes in descending order:
+Blog	Likes
+React Fundamentals	20
+JavaScript Introduction	10
+PostgreSQL Basics	5
+
+2. Modify your existing query
+You only need to add order to your Blog.findAll():
+const blogs = await Blog.findAll({
+  attributes: { exclude: ["userId"] },
+  include: {
+    model: User,
+    attributes: ["name"],
+  },
+  where,
+  order: [["likes", "DESC"]],
+});
+
+
+3. Understand the syntax
+order: [["likes", "DESC"]]
+
+
+- order: tells Sequelize how to sort the results.
+- "likes": the database column used for sorting.
+- "DESC": descending order (highest to lowest).
+For comparison:
+SQL ordering	Meaning
+DESC	Highest to lowest
+ASC	Lowest to highest
+
+Equivalent SQL:
+SELECT *
+FROM blogs
+ORDER BY likes DESC;
+
+
+4. Important: Ordering and filtering work together
+Your existing search filter remains unchanged.
+
+For example:
+GET /api/blogs?search=react
+
+
+This will:
+1. Search for react in the title or author.
+2. Return matching blogs.
+3. Sort those matching blogs by likes, highest first.
+
+Exercise: 16. Author
+Exercise 16 is an important one because you're moving from retrieving individual blog records to calculating summary information directly in the database.
+
+We will use three SQL concepts:
+1. GROUP BY – groups blogs belonging to the same author.
+2. COUNT – counts how many blogs each author has written.
+3. SUM – calculates the total likes for each author.
+1. Understand the expected result
+Imagine your blogs table contains:
+Author	Title	Likes
+Jami Kousa	React Basics	3
+Jami Kousa	Node.js	5
+Jami Kousa	PostgreSQL	2
+Robert C. Martin	Clean Code	2
+Dan Abramov	React Hooks	4
+
+The database should group the records by author and calculate:
+Author	Blogs	Likes
+Jami Kousa	3	10
+Robert C. Martin	1	2
+Dan Abramov	1	4
+
+Notice that we are no longer returning individual blogs. We are returning aggregated results.
+2. Understand the Sequelize functions
+First, import Sequelize:
+const { Sequelize } = require("sequelize");
+
+
+Sequelize provides two useful functions:
+
+COUNT
+Sequelize.fn("COUNT", Sequelize.col("id"))
+
+
+Equivalent SQL:
+COUNT(id)
+
+
+Counts the number of blog records.
+
+SUM
+Sequelize.fn("SUM", Sequelize.col("likes"))
+
+
+Equivalent SQL:
+SUM(likes)
+
+
+Adds together the likes for each author.
+3. Build the route
+Add this route to your application:
+router.get("/authors", async (req, res) => {
+  const authors = await Blog.findAll({
+    attributes: [
+      "author",
+      [sequelize.fn("COUNT", sequelize.col("id")), "blogs"],
+      [sequelize.fn("SUM", sequelize.col("likes")), "likes"],
+    ],
+    group: ["author"],
+    order: [[sequelize.fn("SUM", sequelize.col("likes")), "DESC"]],
+  });
+
+  res.json(authors);
+});
+
+
+This includes the bonus: ordering by total likes in descending order.
+
+Make sure your router is mounted at /api, so the complete endpoint becomes /api/authors.
+4. Understand GROUP BY
+This is probably the most important part:
+group: ["author"],
+
+
+Imagine the database has five blog records.
+
+GROUP BY author tells PostgreSQL:
+- Put Jami's blogs together.
+- Put Robert's blogs together.
+- Put Dan's blogs together.
+Then COUNT and SUM calculate values separately for each group.
+5. Understand the bonus
+order: [[Sequelize.fn("SUM", Sequelize.col("likes")), "DESC"]],
+
+
+This tells PostgreSQL to sort authors based on their total likes, from highest to lowest.
+
+Conceptually, the SQL query looks like this:
+SELECT
+  author,
+  COUNT(id) AS blogs,
+  SUM(likes) AS likes
+FROM blogs
+GROUP BY author
+ORDER BY SUM(likes) DESC;
+
+
+6. Test your endpoint
+Use REST Client:
+GET http://localhost:3000/api/authors
+
+
+Expected structure:
+[
+  {
+    "author": "Jami Kousa",
+    "blogs": "3",
+    "likes": "10"
+  },
+  {
+    "author": "Dan Abramov",
+    "blogs": "1",
+    "likes": "4"
+  }
+]
+
+
+PostgreSQL commonly returns aggregate values as strings, which is why "3" and "10" are acceptable.
+
+7. Check your understanding
+Before implementing, try these three questions.
+Your Sequelize knowledge check
+3/3 answered
+
+1. What does GROUP BY author do?
+
+Sorts authors alphabetically
+
+Groups blogs belonging to the same author
+
+Counts all authors
+
+Correct! GROUP BY creates groups of records that share the same author.
+
+
+2. Which Sequelize function calculates the total likes?
+
+COUNT
+
+GROUP
+
+SUM
+
+Correct! SUM adds the likes values together within each author group.
+
+
+3. If an author has 4 blogs, with likes 2, 5, 3 and 10, what should COUNT and SUM return?
+
+COUNT = 20, SUM = 4
+
+COUNT = 4, SUM = 20
+
+COUNT = 4, SUM = 10
+
+Correct! COUNT counts four blog records. SUM adds 2 + 5 + 3 + 10 = 20.
+
+Check my answers3/3

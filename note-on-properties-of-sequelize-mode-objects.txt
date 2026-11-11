@@ -1,0 +1,83 @@
+Note on the properties of Sequelize model objects
+The definition of our models included the following lines, among others:
+
+
+User.hasMany(Note)
+Note.belongsTo(User)
+
+User.belongsToMany(Team, { through: Membership })
+Team.belongsToMany(User, { through: Membership })
+These allow Sequelize to make queries that retrieve, for example, all the notes of users, or all members of a team.
+
+Thanks to the definitions, we also have direct access to, for example, the user's notes in the code. For example, the following code would search for the user with id 1 and print the notes associated with that user:
+
+
+const user = await User.findByPk(1, {
+  include: {
+    model: Note
+  }
+})
+
+user.notes.forEach(note => {
+  console.log(note.content)
+})
+The User.hasMany(Note) definition therefore attaches a notes property to the user object, which gives access to the notes made by the user. The User.belongsToMany(Team, { through: Membership })) definition similarly attaches a teams property to the user object, which can also be used in the code:
+
+
+const user = await User.findByPk(1, {
+  include: {
+    model: Team
+  }
+})
+
+user.teams.forEach(team => {
+  console.log(team.name)
+})
+Suppose we would like to return a JSON object from the single user's route containing the user's name, username and number of notes created. We could try the following:
+
+
+router.get('/:id', async (req, res) => {
+  const user = await User.findByPk(req.params.id, {
+    include: {
+        model: Note
+      }
+    }
+  )
+
+  if (user) {
+    user.noteCount = user.notes.length
+    delete user.notes   
+    res.json(user)
+  } else {
+    res.status(404).end()
+  }
+})
+So, we tried to add the noteCount field on the object returned by Sequelize and remove the notes field from it. However, this approach does not work because the objects returned by Sequelize are not normal objects to which we can add new fields as we wish.
+
+A better solution is to create a completely new object based on the data retrieved from the database:
+
+
+router.get('/:id', async (req, res) => {
+  const user = await User.findByPk(req.params.id, {
+    include: {
+        model: Note
+      }
+    }
+  )
+
+  if (user) {
+    res.json({
+      username: user.username,
+      name: user.name,
+      noteCount: user.notes.length
+    })
+  } else {
+    res.status(404).end()
+  }
+})
+
+The mental model:
+- HTTP method determines the type of operation.
+- URL pattern determines which resource or operation is targeted.
+- req.params extracts values from the URL.
+- res.json() sends the response to the client.

@@ -1,0 +1,621 @@
+Migrations
+Let's continue expanding the backend. We want to implement support for users with admin status to set other users to inactive status, preventing them from logging in and creating new notes. To implement this, we need to add boolean-valued information to the user database table indicating whether the user is an admin and whether the user account is inactive.
+
+We could proceed as before, i.e., change the model that defines the table and rely on Sequelize to synchronize the schema changes to the database. This is specified by these lines in the file models/index.js
+
+
+const Note = require('./note')
+const User = require('./user')
+
+Note.belongsTo(User)
+User.hasMany(Note)
+
+// make the possible schema changes
+const syncModels = async () => {
+  User.sync({ alter: true })
+  Note.sync({ alter: true })
+}
+
+syncModels()
+
+module.exports = {
+  Note, User
+}
+However, this approach does not make sense in the long run. Let's remove the lines that do the synchronization and move to using a much more robust way, migrations(opens in a new tab) provided by Sequelize (and many other libraries).
+
+In practice, a migration is a single JavaScript file that describes a change to be made to a database. A separate migration file is created for each individual change or for multiple changes made at once. Sequelize keeps track of which migrations have been performed, i.e., which migration changes have been synchronized with the database schema. As new migrations are created, Sequelize stays up to date on which changes to the schema still need to be made. This way, changes are made in a controlled manner, with program code stored in version control.
+
+First, create a migration that brings the database to its current state. The migration code is as follows:
+
+
+const { DataTypes } = require('sequelize')
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.createTable('users', {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+      },
+      username: {
+        type: DataTypes.STRING,
+        unique: true,
+        allowNull: false
+      },
+      name: {
+        type: DataTypes.STRING,
+        allowNull: false
+      },
+    })
+    await queryInterface.createTable('notes', {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+      },
+      content: {
+        type: DataTypes.TEXT,
+        allowNull: false
+      },
+      important: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false
+      },
+      date: {
+        type: DataTypes.DATE
+      },
+      user_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: { model: 'users', key: 'id' },
+      }
+    })
+  },
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.dropTable('notes')
+    await queryInterface.dropTable('users')
+  },
+}
+The migration file defines(opens in a new tab) the functions up and down, the first of which defines how the database should be modified when the migration is performed. The function down tells you how to undo the migration if there is a need to do so.
+
+Our migration contains two operations: the first creates a users table, the second creates a notes table, which has a foreign key to the users table referencing the creator of the note. Changes in the schema are defined by calling the queryInterface(opens in a new tab) object methods.
+
+When defining migrations, it is essential to remember that, unlike models, column and table names such as user_id are written in snake case form.
+
+So in migrations, the names of the tables and columns are written exactly as they appear in the database, while models use Sequelize's default camelCase naming convention.
+
+Save the migration code in the file migrations/20260211_00_initialize_notes_and_users.js. The names of migration files must be in alphabetical order so that the earlier change always precedes the newer change in the alphabet. A good way to achieve this order is to start the name of the migration file with the date and sequence number.
+
+We could run the migrations from the command line using the Sequelize command line tool(opens in a new tab). However, we choose to perform the migrations manually from the program code using the Umzug(opens in a new tab) library. Let's install the library
+
+
+npm install umzug
+Let's change the file util/db.js that handles the database connection as follows:
+
+
+const Sequelize = require('sequelize')
+const { DATABASE_URL } = require('./config')
+
+const { Umzug, SequelizeStorage } = require('umzug')
+
+const sequelize = new Sequelize(DATABASE_URL, {
+  dialectOptions: {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false
+    }
+  },
+})
+
+const runMigrations = async () => {
+  const migrator = new Umzug({
+    migrations: {
+      glob: 'migrations/*.js',
+    },
+    storage: new SequelizeStorage({ sequelize, tableName: 'migrations' }),
+    context: sequelize.getQueryInterface(),
+    logger: console,
+  })
+  
+  const migrations = await migrator.up()
+  console.log('Migrations up to date', {
+    files: migrations.map((mig) => mig.name),
+  })
+}
+
+const connectToDatabase = async () => {
+  try {
+    await sequelize.authenticate()
+    await runMigrations()
+    console.log('connected to the database')
+  } catch (err) {
+    console.log('failed to connect to the database')
+    console.log(err)
+    return process.exit(1)
+  }
+}
+
+module.exports = { connectToDatabase, sequelize }
+The runMigrations function that performs migrations is now executed every time the application opens a database connection when it starts. Sequelize keeps track of which migrations have already been completed, so if there are no new migrations, running the runMigrations function does nothing.
+
+Now let's start with a clean slate and remove all existing database tables from the application:
+
+
+username => drop table notes;
+username => drop table users;
+username => \d
+Did not find any relations.
+Let's start up the application. A message about the migrations status is printed on the log
+
+
+INSERT INTO "migrations" ("name") VALUES ($1) RETURNING "name";
+Migrations up to date { files: [ '20260211_00_initialize_notes_and_users.js' ] }
+database connected
+If we restart the application, the log also shows that the migration was not repeated.
+
+The database schema of the application now looks like this
+
+
+defaultdb=> \d
+                 List of relations
+ Schema |     Name     |   Type   |     Owner
+--------+--------------+----------+----------------
+ public | migrations   | table    | username
+ public | notes        | table    | username
+ public | notes_id_seq | sequence | username
+ public | users        | table    | username
+ public | users_id_seq | sequence | username
+So Sequelize has created a migrations table that allows it to keep track of the migrations that have been performed. The contents of the table look as follows:
+
+
+defaultdb=> select * from migrations;
+                   name
+-------------------------------------------
+  20260211_00_initialize_notes_and_users.js
+Let's create a few users in the database, as well as a set of notes, and after that we are ready to expand the application.
+
+The current code for the application is in its entirety on GitHub(opens in a new tab), branch step6.
+
+Admin user and user disabling
+So we want to add two boolean fields to the users table
+
+admin indicates whether the user is an admin
+disabled indicates whether the user account has been disabled.
+Let's create the migration that modifies the database in the file migrations/20260211_02_admin_and_disabled_to_users.js:
+
+
+const { DataTypes } = require('sequelize')
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.addColumn('users', 'admin', {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    })
+    await queryInterface.addColumn('users', 'disabled', {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    })
+  },
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.removeColumn('users', 'admin')
+    await queryInterface.removeColumn('users', 'disabled')
+  },
+}
+Make corresponding changes to the model corresponding to the users table:
+
+
+User.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  username: {
+    type: DataTypes.STRING,
+    unique: true,
+    allowNull: false
+  },
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  admin: {    
+    type: DataTypes.BOOLEAN,    
+    defaultValue: false  
+  },
+  disabled: {    
+    type: DataTypes.BOOLEAN,    
+    defaultValue: false  
+  },
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'user'
+})
+When the new migration is performed when the code restarts, the schema is changed as desired:
+
+
+username-> \d users
+                                     Table "public.users"
+  Column  |          Type          | Collation | Nullable |              Default
+----------+------------------------+-----------+----------+-----------------------------------
+ id       | integer                |           | not null | nextval('users_id_seq'::regclass)
+ username | character varying(255) |           | not null |
+ name     | character varying(255) |           | not null |
+ admin    | boolean                |           |          |
+ disabled | boolean                |           |          |
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+Referenced by:
+    TABLE "notes" CONSTRAINT "notes_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id)
+Now let's expand the controllers as follows. We prevent logging in if the user field disabled is set to true:
+
+
+router.post('/', async (request, response) => {
+  const body = request.body
+
+  const user = await User.findOne({
+    where: {
+      username: body.username
+    }
+  })
+
+  const passwordCorrect = body.password === 'secret'
+
+  if (!(user && passwordCorrect)) {
+    return response.status(401).json({
+      error: 'invalid username or password'
+    })
+  }
+
+  if (user.disabled) {
+    return response.status(401).json({
+      error: 'account disabled, please contact admin'
+    })
+  }  
+
+  const userForToken = {
+    username: user.username,
+    id: user.id,
+  }
+
+  const token = jwt.sign(userForToken, SECRET)
+
+  response
+    .status(200)
+    .send({ token, username: user.username, name: user.name })
+})
+Let's disable the user jakousa using his ID:
+
+
+username => update users set disabled=true where id=4;
+UPDATE 1
+username => select * from users;
+ id | username |              name               | admin | disabled 
+----+----------+---------------------------------+-------+----------
+  2 | mluukkai | Matti Luukkainen                | f     | f
+  4 | jakousa  | Jami Kousa (The Docker Captain) | f     | t
+  3 | ousa     | Outi Savolainen                 | t     | f
+And make sure that logging in is no longer possible
+
+Add alt
+Let's create a route (to file controllers/users.js) that will allow an admin to change the status of a user's account:
+
+
+const isAdmin = async (req, res, next) => {
+  const user = await User.findByPk(req.decodedToken.id)
+  if (!user.admin) {
+    return res.status(401).json({ error: 'operation not allowed' })
+  }
+  next()
+}
+
+router.put('/:username', tokenExtractor, isAdmin, async (req, res) => {
+  const user = await User.findOne({
+    where: {
+      username: req.params.username
+    }
+  })
+
+  if (user) {
+    user.disabled = req.body.disabled
+    await user.save()
+    res.json(user)
+  } else {
+    res.status(404).end()
+  }
+})
+There are two middleware used, the first called tokenExtractor is the same as the one used by the note-creation route, i.e. it places the decoded token in the decodedToken field of the request-object. The second middleware isAdmin checks whether the user is an admin and if not, the request status is set to 401 and an appropriate error message is returned.
+
+Note how two middleware are chained to the route, both of which are executed before the actual route handler. It is possible to chain an arbitrary number of middleware to a request.
+
+The middleware tokenExtractor is now moved to util/middleware.js as it is used from multiple locations:
+
+
+const jwt = require('jsonwebtoken')
+const { SECRET } = require('./config.js')
+
+const tokenExtractor = (req, res, next) => {
+  const authorization = req.get('authorization')
+  if (authorization && authorization.toLowerCase().startsWith('bearer ')) {
+    try {
+      req.decodedToken = jwt.verify(authorization.substring(7), SECRET)
+    } catch{
+      return res.status(401).json({ error: 'token invalid' })
+    }
+  } else {
+    return res.status(401).json({ error: 'token missing' })
+  }
+  next()
+}
+
+module.exports = { tokenExtractor }
+Perhaps it is a good idea to move also the isAdmin middleware to the same file.
+
+An admin can now re-enable the user jakousa by making a PUT request to /api/users/jakousa, where the request comes with the following data:
+
+
+{
+    "disabled": false
+}
+As noted in the end of Part 4(opens in a new tab), the way we implement disabling users here is problematic. Whether or not the user is disabled is only checked at login, if the user has a token at the time the user is disabled, the user may continue to use the same token, since no lifetime has been set for the token and the disabled status of the user is not checked when creating notes.
+
+Before we proceed, let's make an npm script for the application, which allows us to undo the previous migration. After all, not everything always goes right the first time when developing migrations.
+
+Let's modify the file util/db.js as follows:
+
+
+const Sequelize = require('sequelize')
+const { DATABASE_URL } = require('./config')
+const { Umzug, SequelizeStorage } = require('umzug')
+
+const sequelize = new Sequelize(DATABASE_URL, {
+  dialectOptions: {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false
+    }
+  },
+});
+
+const connectToDatabase = async () => {
+  try {
+    await sequelize.authenticate()
+    await runMigrations()
+    console.log('connected to the database')
+  } catch (err) {
+    console.log('failed to connect to the database')
+    return process.exit(1)
+  }
+}
+
+const migrationConf = {
+  migrations: {
+    glob: 'migrations/*.js',
+  },
+  storage: new SequelizeStorage({ sequelize, tableName: 'migrations' }),
+  context: sequelize.getQueryInterface(),
+  logger: console,
+}
+  
+const runMigrations = async () => {
+  const migrator = new Umzug(migrationConf)
+  const migrations = await migrator.up()
+  console.log('Migrations up to date', {
+    files: migrations.map((mig) => mig.name),
+  })
+}
+const rollbackMigration = async () => {
+  await sequelize.authenticate()
+  const migrator = new Umzug(migrationConf)
+  await migrator.down()
+}
+
+module.exports = { connectToDatabase, sequelize, rollbackMigration }
+Let's create a file util/rollback.js, which will allow the npm script to execute the specified migration rollback function:
+
+
+const { rollbackMigration } = require('./db')
+
+rollbackMigration()
+and the script to the file package.json:
+
+
+{
+  "scripts": {
+    "dev": "node --watch index.js",
+    "migration:down": "node util/rollback.js"  
+  },
+}
+So we can now undo the previous migration by running npm run migration:down from the command line.
+
+Migrations are currently executed automatically when the program is started. In the development phase of the program, it might sometimes be more appropriate to disable the automatic execution of migrations and make migrations manually from the command line.
+
+This error happens because the blogs table depends on the users table through a foreign key.
+
+Let's understand what PostgreSQL is telling you.
+1. Why did DROP TABLE notes work?
+You executed:
+DROP TABLE notes;
+
+
+PostgreSQL successfully deleted the notes table because no other table was depending on it.
+2. Why did DROP TABLE users fail?
+Your database has a relationship similar to this:
+users table
+
+Parent table — contains user records
+
+id (PRIMARY KEY)
+
+blogs.user_id references users.id
+
+blogs table
+
+Child table — belongs to a user
+
+user_id (FOREIGN KEY)
+
+
+PostgreSQL protects your database from accidentally deleting a parent table while another table depends on it.
+That's why you received:
+cannot drop table users because other objects depend on it
+constraint blogs_user_id_fkey on table blogs depends on table users
+
+3. How can you fix it?
+You have two options.
+Option A: Drop the child table first (recommended for learning)
+DROP TABLE blogs;
+DROP TABLE users;
+Why?
+1. Delete blogs first.
+2. Its foreign-key relationship disappears.
+3. Now PostgreSQL allows you to delete users.
+Option B: Use CASCADE
+DROP TABLE users CASCADE;
+This tells PostgreSQL to delete the users table and automatically remove dependent objects, such as the foreign-key constraint on blogs.
+
+Be careful: CASCADE does not automatically delete the blogs table itself. It removes the dependent constraint, leaving blogs in place.
+4. Test your understanding
+Before moving forward, answer these three questions:
+1. Which table is the parent table?
+
+blogs
+
+users
+
+notes
+
+Correct! users is the parent because blogs.user_id references users.id.
+
+
+2. Why can't PostgreSQL drop users first?
+
+Because users has too many rows
+
+Because blogs depends on users
+
+Because users is empty
+
+Correct! The foreign key in blogs depends on the users table.
+
+
+3. Which table should you drop first when removing both blogs and users?
+
+users
+
+blogs
+
+Either one
+
+Correct! Drop blogs first because it is the child table.
+
+Check my answersScore: 3/3
+Try again
+
+Good! Your output actually confirms that your application successfully connected to PostgreSQL. The problem is now inside your migration file, not the database connection.
+
+Let's trace it step by step.
+1. What worked?
+These lines are important:
+Executing (default): SELECT 1+1 AS result
+
+This means Sequelize successfully executed a test query against PostgreSQL.
+Then:
+SELECT "name" FROM "migrations" AS "SequelizeMeta"
+This means Umzug checked the migration history to determine which migrations have already run.
+
+So far, everything is working.
+2. What failed?
+Look at this:
+Migration 20260211_00_initialize_notes_and_users.js (up) failed:
+
+Original error: (intermediate value).up is not a function
+
+Your migration runner expects every migration file to provide an up function.
+
+Think of it this way:
+- up() = apply a database change.
+- down() = reverse a database change.
+For example, a migration might create a users table in up() and remove it in down().
+
+1. What we know so far
+Your migration runner is configured here:
+const migrator = new Umzug({
+  migrations: {
+    glob: "migrations/*.js",
+  },
+  storage: new SequelizeStorage({ sequelize, tableName: "migrations" }),
+  context: sequelize.getQueryInterface(),
+  logger: console,
+});
+
+This tells Umzug to:
+1. Look inside the migrations folder.
+2. Find JavaScript migration files.
+3. Check which migrations have already run.
+4. Execute pending migrations using their up functions.
+
+5. Test your understanding
+One question before we continue:
+Suppose tomorrow you add another migration file called 20261104_add_email_to_users.js. When you restart your application, what will Umzug do?
+
+A. Execute all migration files again.
+B. Execute only the new migration that hasn't been recorded.
+C. Delete the existing migration history.
+D. Recreate the entire database.
+
+. Delete the tables
+Run these commands in psql, one at a time:
+
+defaultdb=> DROP TABLE IF EXISTS notes CASCADE;
+NOTICE:  table "notes" does not exist, skipping
+DROP TABLE
+defaultdb=> DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE
+defaultdb=> DROP TABLE IF EXISTS migrations CASCADE;
+DROP TABLE
+defaultdb=> \d
+Did not find any relations.
+defaultdb=> 
+
+Verify deletion
+Run:
+\dt
+
+defaultdb=> \d
+Did not find any relations.
+defaultdb=> \dt
+Did not find any tables.
+defaultdb=> 
+
+Exit PostgreSQL:
+\q
+
+defaultdb=> \d
+              List of relations
+ Schema |     Name     |   Type   |  Owner   
+--------+--------------+----------+----------
+ public | migrations   | table    | avnadmin
+ public | notes        | table    | avnadmin
+ public | notes_id_seq | sequence | avnadmin
+ public | users        | table    | avnadmin
+ public | users_id_seq | sequence | avnadmin
+(5 rows)
+
+defaultdb=> select * from migrations;
+                   name                    
+-------------------------------------------
+ 20260211_00_initialize_notes_and_users.js
+(1 row)
+
+defaultdb=> 
+
+The important difference:
+- DELETE FROM migrations; — removes migration records but keeps the table.
+- DROP TABLE migrations; — removes the entire migrations table.
+Both approaches can work in this situation.

@@ -1,0 +1,1328 @@
+Use relational databases with Node.js applications
+The course explores how to build Node backends that use relational databases instead of document databases like MongoDB.
+
+Use Sequelize as an ORM
+You learn to use the Sequelize library to define models, create associations between tables, and perform queries against a PostgreSQL database from a Node.js application.
+
+Manage database schema changes with migrations
+You learn how to use migrations to evolve the database schema over time in a controlled and repeatable way, rather than relying on automatic schema synchronization.
+
+A hosted solution: Aiven
+At the time of writing (9th February 2026) Aiven provides a free tier that suits well for the purposes of this course. Go to aiven.io and sign up. After creating the database, check what the connection url is:
+
+Docker
+This instruction assumes that you've mastered the basics of Docker to the extent taught by e.g. part 12.
+
+Start Postgres Docker image(opens in a new tab) with the command
+
+
+docker run -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 postgres
+
+A psql console connection to the database can be opened using the docker exec command. First you need to find out the id of the container:
+
+
+$ docker ps
+CONTAINER ID   IMAGE      COMMAND                  CREATED          STATUS          PORTS                    NAMES
+ff3f49eadf27   postgres   "docker-entrypoint.s…"   31 minutes ago   Up 31 minutes   0.0.0.0:5432->5432/tcp   great_raman
+
+to exec open another terminal
+docker exec -it ff3f49eadf27 psql -U postgres postgres
+psql (15.2 (Debian 15.2-1.pgdg110+1))
+Type "help" for help.
+
+postgres=#
+
+Accessing the database
+Particularly when using a relational database, it is essential to access the database directly as well. There are many ways to do this. One possibility is to use the Postgres psql(opens in a new tab) command-line tool. If you do not have psql installed or are not using the Docker installation, download and install pgAdmin, which is a graphical Postgres client.
+
+Opening a connection with psql
+If you have the psql installed at your host machine, the connection is opened with command
+
+
+psql postgres://userhere:passwordhere@hostnamehere.aivencloud.com:10789/defaultdb?sslmode=require
+If you have Docker installed, you can open the connection to Aiven database as follows
+
+docker run -it --rm postgres psql "postgres://userhere:passwordhere@hostnamehere.aivencloud.com:10789/defaultdb?sslmode=require"
+challenge:
+psql: error: could not translate host name "pg-postgresqlapp-kuolbuom111-5e5b.a.aivencloud.com" to address: Name or service not known
+cause:
+databases Service Power off
+solution:
+databases Service Power on
+
+What does it mean? current_database() is a PostgreSQL function that tells you which database you are currently using. In your case, it should return defaultdb.
+SELECT current_database();
+
+Let's create a table for notes:
+
+
+CREATE TABLE notes (
+    id SERIAL PRIMARY KEY,
+    content text NOT NULL,
+    important boolean,
+    date time
+);
+
+the \d command, which tells us what tables are in the database
+\d
+
+In addition to the notes table, Postgres created a subtable called notes_id_seq, which keeps track of what value is assigned to the id column when creating the next note.
+
+With the command \d notes, we can see how the notes table is defined:
+defaultdb=> \d notes;
+
+We can see that the column id has a default value, which is obtained by calling Postgres' internal function nextval.
+
+Let's add some content to the table:
+
+
+insert into notes (content, important) values ('Relational databases rule the world', true);
+insert into notes (content, important) values ('MongoDB is webscale', false);
+
+And let's see what the created content looks like:
+defaultdb=> select * from notes;
+
+If we try to store data in the database that does not comply with the schema, it will not work. The value of a mandatory column cannot be missing:
+
+
+defaultdb=> insert into notes (important) values (true);
+ERROR: null value in column "content" of relation "notes" violates not-null constraint
+DETAIL: Failing row contains (9, null, t, null).
+
+The column value cannot be of the wrong type:
+
+
+defaultdb=> insert into notes (content, important) values ('only valid data can be saved', 1);
+ERROR: column "important" is of type boolean but expression is of type integer
+LINE 1: ...tent, important) values ('only valid data can be saved', 1); ^
+
+
+
+Columns that don't exist in the schema are not accepted either:
+defaultdb=> insert into notes (content, important, value) values ('only valid data can be saved', true, 10);
+ERROR: column "value" of relation "notes" does not exist
+LINE 1: insert into notes (content, important, value) values ('only ...
+
+Node application using a relational database
+Let's start the application as usual with the npm init and install nodemon as a development dependency and also the following runtime dependencies:
+
+
+npm install express dotenv pg sequelize
+Of these, the latter sequelize(opens in a new tab) is the library through which we use Postgres. Sequelize is a so-called Object relational mapping(opens in a new tab) (ORM) library that allows you to store JavaScript objects in a relational database without using the SQL language itself, similar to Mongoose that we used with MongoDB.
+
+Once the connect string has been set up in the file .env we can test for a connection:
+$ node index.js
+
+query interfaces:
+1. Common database query methods
+Method	                     Purpose                         	Example
+findAll()	               Retrieve all records	                Get all notes
+findById()	               Retrieve one record by ID	        Get note number 3
+findOne()	               Retrieve one matching record	        Find a note by its content
+create()	               Insert a new record	                Create a note
+update()	               Modify an existing record	        Change a note's content
+delete()	               Remove a record                 	    Delete a note
+count() /
+countDocuments()	      Count matching records	            Count all notes
+save()	                  Save changes or persist an object,
+                          depending on the library	            Save a modified note
+
+
+Creating database tables automatically
+Our application now has one drawback: it assumes that a database with exactly the right schema exists, i.e., that the table notes has been created with the appropriate create table command.
+
+Since the program code is stored in GitHub, it would be sensible to also store the commands that create the database in connection with the program code, so that the database schema is definitely the same as what the program code expects. Sequelize is actually able to generate the schema automatically from the model definitions using the model method sync(opens in a new tab).
+
+Let's now destroy the table notes from the console by entering the following command:
+
+
+drop table notes;
+The \d command reveals that the table has been lost from the database:
+
+
+postgres=# \d
+Did not find any relations.
+The application no longer works.
+
+Let's add the following command to the application immediately after the model Note is defined:
+
+
+Note.sync()
+When the application starts, the following is printed on the console:
+
+
+Executing (default): CREATE TABLE IF NOT EXISTS "notes" ("id" SERIAL , "content" TEXT NOT NULL, "important" BOOLEAN, "date" TIMESTAMP WITH TIME ZONE, PRIMARY KEY ("id"));
+
+Printing the objects returned by Sequelize to the console
+The JavaScript programmer's most important tool (besides AI agents) is console.log, whose aggressive use gets even the worst bugs under control. Let's add console printing to the single note path:
+
+
+app.get('/api/notes/:id', async (req, res) => {
+  const note = await Note.findByPk(req.params.id)
+  if (note) {
+    console.log(note)    
+    res.json(note)
+  } else {
+    res.status(404).end()
+  }
+})
+We can see that the end result is not exactly what we expected:
+
+
+note {
+  dataValues: {
+    id: 1,
+    content: 'Notes are attached to a user',
+    important: true,
+    date: 2026-02-03T15:00:24.582Z,
+  },
+  _previousDataValues: {
+    id: 1,
+    content: 'Notes are attached to a user',
+    important: true,
+    date: 2026-02-03T15:00:24.582Z,
+  },
+  _changed: Set(0) {},
+  _options: {
+    isNewRecord: false,
+    _schema: null,
+    _schemaDelimiter: '',
+    raw: true,
+    attributes: [ 'id', 'content', 'important', 'date' ]
+  },
+  isNewRecord: false
+}
+In addition to the note information, all sorts of other things are printed on the console. We can get the desired result by calling the model-object method toJSON(opens in a new tab):
+
+
+app.get('/api/notes/:id', async (req, res) => {
+  const note = await Note.findByPk(req.params.id)
+  if (note) {
+    console.log(note.toJSON())    
+    res.json(note)
+  } else {
+    res.status(404).end()
+  }
+})
+Now the result is exactly what we want:
+
+
+{ id: 1,
+  content: 'MongoDB is webscale',
+  important: false,
+  date: 2026-02-09T13:52:58.693Z }
+In the case of a collection of objects, the method toJSON does not work directly, the method must be called separately for each object in the collection:
+
+
+app.get('/api/notes', async (req, res) => {
+  const notes = await Note.findAll()
+
+  console.log(notes.map(n=>n.toJSON()))
+  res.json(notes)
+})
+The print looks like the following:
+
+
+[ { id: 1,
+    content: 'MongoDB is webscale',
+    important: false,
+    date: 2026-02-09T13:52:58.693Z },
+  { id: 2,
+    content: 'Relational databases rule the world',
+    important: true,
+    date: 2026-02-09T13:53:10.710Z } ]
+However, perhaps a better solution is to turn the collection into JSON for printing by using the method JSON.stringify(opens in a new tab):
+
+
+app.get('/api/notes', async (req, res) => {
+  const notes = await Note.findAll()
+
+  console.log(JSON.stringify(notes))
+  res.json(notes)
+})
+This way is better especially if the objects in the collection contain other objects. It is also often useful to format the objects on the screen in a slightly more reader-friendly format. This can be done with the following command:
+
+
+console.log(JSON.stringify(notes, null, 2))
+The print looks like the following:
+
+
+[
+  {
+    "id": 1,
+    "content": "MongoDB is webscale",
+    "important": false,
+    "date": "2026-02-09T13:52:58.693Z"
+  },
+  {
+    "id": 2,
+    "content": "Relational databases rule the world",
+    "important": true,
+    "date": "2026-02-09T13:53:10.710Z"
+  }
+]
+
+challeage:
+GET http://localhost:3001/api/notes/1 404 (Not Found)
+cause:
+There are a few possible explanations:
+1. The server was running outdated code. You may have changed the route or other code, but the running Node.js process hadn't loaded the latest version.
+2. The server was in an inconsistent state. For example, a development tool such as Nodemon might not have restarted the application properly after a change.
+3. The request reached a different running server process. If you had multiple Node.js processes or applications using port 3001, the request might have reached a process with different code or configuration.
+We cannot know which one happened without seeing the server logs from before the restart.
+Understand the request flow
+REST Client
+
+GET /api/notes/1
+
+Express server
+
+Matches /api/notes/:id
+
+Sequelize
+
+Note.findByPk(1)
+
+PostgreSQL
+
+Finds the note and returns it
+solution:
+restart
+
+this post on rest client:
+POST http://localhost:3001/api/notes
+Content-Type: application/json
+
+{
+  "content": "note is inserted using create interface. this is not true",
+  "important": true
+}
+
+this is how put work on rest client:
+PUT http://localhost:3001/api/notes/6
+Content-Type: application/json
+
+{
+  "content": "note is inserted using create interface. this is not true",
+  "important": false
+}
+
+challeage:
+REST Client receives 204 No Content, but the note still exists
+
+cause:
+await note.destroy()
+
+Look at your current code:
+app.delete("/api/notes/:id", async (req, res) => {
+  const note = await Note.findByPk(req.params.id);
+
+  if (note) {
+    res.status(204).end();
+  } else {
+    res.status(404).end();
+  }
+});
+
+
+You find the note, then send a successful response — but you never tell Sequelize to delete the note from the database.
+
+The key distinction:
+- res.status(204).end() tells the client the request succeeded and there is no response body.
+- await note.destroy() actually deletes the database record.
+
+solution:
+add this => await note.destroy();
+The order matters:
+1. Find the note by its ID.
+2. Delete it using await note.destroy().
+3. Return 204 No Content.
+
+1. Client sends a request
+
+GET /api/notes/5
+
+2. noteFinder searches the database
+
+Note.findByPk(req.params.id)
+
+Note found
+next()
+
+Continue to route
+
+
+Note missing
+404
+
+Stop the request
+
+const noteFinder — creates a function named noteFinder.
+async — allows us to use await for asynchronous operations.
+req — contains information about the incoming request.
+res — allows us to send a response to the client.
+next — a function that tells Express to continue to the next middleware or route handler.
+
+Client
+Browser or REST Client
+
+app — Express application
+Receives requests and matches them to handlers
+
+Route handler
+Finds notes and sends a response
+
+Server address
+http://localhost:3000
+
+
+Route path
+/api/notes
+
+Complete URL
+http://localhost:3000/api/notes
+
+Let's understand the path itself:
+- / — starts the path.
+- api — a common naming convention indicating that this endpoint belongs to the application's API.
+- notes — identifies the resource we want to work with.
+
+Here's what happens when you send a GET request to http://localhost:3000/api/notes:
+1. app.listen(3000) makes the application listen for incoming requests on port 3000.
+2. app receives the request through the Express application.
+3. get() checks whether the HTTP method is GET.
+4. "/api/notes" identifies the path that must match.
+5. The callback function runs Note.findAll() to retrieve all notes from the database.
+6. res.json(notes) sends the notes back to the client as JSON.
+
+TEST FROM CHATGPT
+Which part tells Express which URL path to match?
+
+app
+
+
+get()
+
+
+"/api/notes"
+
+ Correct!"/api/notes" is the route path. app is the Express application, and get() specifies the HTTP method.
+
+The three things to remember:
+- app = the Express application that defines how requests are handled.
+- get() = the method that registers a handler for HTTP GET requests.
+- "/api/notes" = the path that the request must match.
+Think of it as: Application → HTTP method → URL path.
+
+try to give some more test
+
+Let's practice more! I'll give you questions one by one, starting easy and then getting harder. The goal is to help you understand Express, not just memorize the code.
+Express practice quiz
+10 questions
+10 of 10 answered
+
+Choose one answer for each question. Submit when you're ready to check your results.
+1. What is `app` in `app.get('/api/notes', handler)`?
+
+The database
+
+The Express application
+
+The URL path
+
+Correct!
+
+`app` is the Express application created by `express()`. We use it to register routes and configure the application.
+
+2. What does `get()` tell Express?
+
+Create a new note
+
+Delete a note
+
+Handle requests using the HTTP GET method
+
+Correct!
+
+`get()` registers a route handler for matching HTTP GET requests, which are commonly used to retrieve data.
+
+3. What is `/api/notes`?
+
+A URL path
+
+A JavaScript variable
+
+An HTTP method
+
+Correct!
+
+`/api/notes` is the route path. It identifies which path the request must match.
+
+4. Your server listens on port 3000. Which is the complete URL for this route: `app.get('/api/notes', handler)`?
+
+`http://localhost:3000`
+
+`http://localhost:3000/api/notes`
+
+`http://localhost/api/notes/3000`
+
+Correct!
+
+The server address is `http://localhost:3000` and the route path is `/api/notes`. Together they form the complete URL.
+
+5. What happens with this route: `app.post('/api/notes', handler)`?
+
+It registers a POST handler for `/api/notes`
+
+It registers a GET handler for `/api/notes`
+
+It automatically starts the server
+
+Correct!
+
+`post()` registers a handler for HTTP POST requests at that path. POST is commonly used to create resources.
+
+6. If you write `app.get('/api/notes/:id', handler)`, what does `:id` represent?
+
+A fixed word that must be typed literally
+
+A route parameter that can hold a value from the URL
+
+The database table name
+
+Correct!
+
+`:id` is a route parameter. For `/api/notes/7`, you can access the value with `req.params.id`, which will be the string `"7"`.
+
+7. In this handler, what does `res.json(notes)` do?
+`app.get('/api/notes', async (req, res) => { const notes = await Note.findAll(); res.json(notes) })`
+
+Reads all notes from the database
+
+Sends the notes to the client as JSON
+
+Starts the server
+
+Correct!
+
+`Note.findAll()` retrieves the notes. `res.json(notes)` sends them to the client as a JSON response.
+
+
+8. You have `app.get('/api/notes', handler)`. A client sends `POST /api/notes`. Will this GET handler normally handle that request?
+
+Yes, because the path matches
+
+No, because the HTTP method does not match
+
+Yes, because GET and POST are identical
+
+Correct!
+
+Express matches both the HTTP method and the route path. A POST request does not normally match a GET-only handler.
+
+9. What is the purpose of `app.listen(3000)`?
+
+It registers a route for notes
+
+It tells the application to listen for network requests on port 3000
+
+It retrieves 3000 notes
+
+Correct!
+
+`app.listen(3000)` starts the server listening on port 3000.
+
+10. You want to update an existing note's `important` value. Which HTTP method is the most appropriate among these?
+
+GET
+
+PUT
+
+DELETE
+
+Correct!
+
+PUT is commonly used to update a resource. GET retrieves data, while DELETE removes a resource.
+
+Your score: 10/10
+Excellent work! You've mastered these basics.
+Try again
+When you finish, our next step can be practicing how req, res, and next work together in middleware, using the same quiz style.
+
+lets go ahead. on my first try i score 9/10 and lastly got 10/10
+
+Excellent! 🎉 You improved from 9/10 to 10/10 on your second try. That shows you're understanding the concepts, not just guessing. Let's move to the next level: req, res, and next in Express middleware.
+
+We'll practice one step at a time.
+Lesson 2: Understand req, res, and next
+Look at this code:
+app.get("/api/notes/:id", (req, res, next) => {
+  console.log(req.params.id)
+  next()
+})
+
+Think of these three parameters as having different responsibilities:
+
+req — Request
+
+Contains information coming from the client, such as URL parameters, the request body, and headers.
+
+Example: req.params.id
+
+res — Response
+
+Lets you send data or a status code back to the client.
+
+Example: res.json(notes)
+
+next — Continue
+
+Passes control to the next middleware or route handler.
+
+Example: next()
+
+Practice quiz: Round 1
+8 questions
+8/8 answered
+
+1. A client requests `/api/notes/12`. What value does `req.params.id` contain?
+
+`/api/notes/12`
+
+`12`
+
+The whole database
+
+Correct!
+
+The `:id` route parameter captures `12` from the URL. Express exposes route parameter values as strings.
+
+2. Which one allows you to send a JSON response to the client?
+
+`req`
+
+`next`
+
+`res`
+
+Correct!
+
+`res` provides response methods, including `res.json()` for sending JSON.
+
+3. What does calling `next()` normally do in middleware?
+
+Passes control to the next middleware or route handler
+
+Deletes the current request
+
+Automatically sends a JSON response
+
+Correct!
+
+`next()` passes control onward. It does not automatically send a response.
+
+4. What does `req.body` usually contain in a POST request with JSON data?
+
+The incoming request's body data
+
+The response status code
+
+The route's URL parameter
+
+Correct!
+
+When JSON body-parsing middleware is configured, such as `app.use(express.json())`, the parsed request data is available in `req.body`.
+
+5. Consider this code: `if (!req.note) return res.status(404).end(); next()`. If `req.note` is missing, what happens?
+
+The middleware sends a 404 response and exits
+
+It always calls `next()`
+
+It creates a new note
+
+Correct!
+
+The `return` exits the middleware after sending the 404 response, so `next()` is not reached.
+
+6. In `router.put('/:id', noteFinder, async (req, res) => { ... })`, what is the role of `noteFinder`?
+
+It starts the server
+
+It runs middleware before the PUT route handler
+
+It replaces the database
+
+Correct!
+
+Express runs `noteFinder` before the final handler. If it calls `next()`, the PUT handler can run.
+
+7. What is wrong with this middleware if the intention is to continue after logging? `const check = (req, res, next) => { console.log('checking'); }`
+
+Nothing; Express automatically continues
+
+It should call `next()` to pass control onward
+
+It must always call `res.json()`
+
+Correct!
+
+If middleware neither sends a response nor calls `next()` (or otherwise transfers control through error handling), the request may hang.
+
+
+
+8. A route executes `res.json(req.note)`. Where might `req.note` have been set?
+
+By earlier middleware attached to the request
+
+Automatically by `res.json()`
+
+Only by the browser
+
+Correct!
+
+Middleware can attach properties such as `req.note` to the request object for later handlers to use.
+
+
+Your score: 8/8
+Try again
+After this round, we'll practice tracing the execution of real middleware code, so you can predict exactly what Express does when a request comes in.
+
+good example i scored 8/8 at the first try, lets go on
+
+Excellent! 🎉 You scored 8/8 on your first try. You're building a strong understanding of Express. Now let's move from recognizing concepts to tracing how code executes, which is an important skill when debugging your own applications.
+Lesson 3: Follow a request through middleware
+Imagine you have this code in your notes application:
+const noteFinder = async (req, res, next) => {
+  req.note = await Note.findByPk(req.params.id)
+
+  if (!req.note) {
+    return res.status(404).end()
+  }
+
+  next()
+}
+
+router.get("/:id", noteFinder, (req, res) => {
+  res.json(req.note)
+})
+
+
+Suppose the database contains note 7:
+{
+  "id": 7,
+  "content": "Learn Express",
+  "important": true
+}
+
+
+A client sends:
+GET /api/notes/7
+
+
+Here's the execution order:
+1
+
+The request arrives
+
+Express matches the GET method and the route path.
+
+
+
+2
+
+noteFinder runs
+
+req.params.id is "7", so Sequelize looks for note 7.
+
+
+
+3
+
+The note is attached to req
+
+req.note now holds the retrieved note.
+
+
+
+4
+
+next() runs
+
+Express continues to the GET route handler.
+
+
+
+5
+
+The response is sent
+
+res.json(req.note) returns the note as JSON.
+
+
+
+Now let's test whether you can predict the execution yourself.
+Practice quiz: Round 2
+8 questions
+0/8 answered
+
+Read the code carefully. Try to predict what Express does rather than memorizing the definitions.
+1. The client requests `/api/notes/7`, and note 7 exists. Which runs first?
+
+`res.json(req.note)`
+
+`noteFinder`
+
+`next()` runs before the database lookup
+
+
+
+2. The database lookup returns `null`. What happens next?
+
+`next()` runs and the route returns null
+
+The note is automatically created
+
+A 404 response is sent, and the middleware returns
+
+
+
+3. Why does the route use `req.note` instead of calling `Note.findByPk()` again?
+
+The middleware already fetched and attached the note to `req`
+
+Express automatically creates `req.note` for every request
+
+`req.note` always contains every note in the database
+
+
+
+4. What does `return` do in `return res.status(404).end()`?
+
+It continues to the next route
+
+It exits the middleware function after initiating the response
+
+It deletes the note
+
+
+
+5. Consider this middleware: `const check = (req, res, next) => { req.message = 'Hello'; next(); }`. What can the next handler do?
+
+Read `req.message` and get `'Hello'`
+
+Read `req.params.message` and automatically get `'Hello'`
+
+Nothing, because request properties cannot be changed
+
+
+
+6. A route is registered as `router.put('/:id', noteFinder, updateHandler)`. The note exists and `noteFinder` calls `next()`. What happens?
+
+Express skips `updateHandler`
+
+Express executes `updateHandler` next
+
+Express automatically sends a 204 response
+
+
+
+7. In a DELETE handler, `await req.note.destroy()` executes successfully, followed by `res.status(204).end()`. What does 204 mean?
+
+The note was not found
+
+The request failed due to a server error
+
+The request succeeded, and the response has no body
+
+
+
+8. What is the main benefit of reusing `noteFinder` in GET, PUT, and DELETE routes?
+
+It avoids repeating the same lookup and existence check in each route
+
+It makes every request a GET request
+
+It removes the need for a database
+
+
+Check my answersAnswer all 8 questions to see your results.
+
+user registeration:
+
+POST http://localhost:3000/api/users
+Content-Type: application/json
+
+{
+  "username": "kuolbuompatai",
+  "name": "Kuol Buom",
+  "password": "secret"
+}
+
+response:
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 54
+ETag: W/"36-4jBWcXuFemB7NYgVklLrwSsOgVI"
+Date: Mon, 26 Oct 2026 06:21:25 GMT
+Connection: close
+
+{
+  "id": 1,
+  "username": "kuolbuompatai",
+  "name": "Kuol Buom"
+}
+
+login:
+
+POST http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "kuol",
+  "password": "secret"
+}
+
+response:
+
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Imt1b2xidW9tcGF0YWkiLCJpZCI6MSwiaWF0IjoxNzkyOTk1OTU3fQ.flNyY9ZXp7Jg_9SszjdEb_jg3urYkseFgZ7G5M8RJmc",
+  "username": "kuolbuompatai",
+  "name": "Kuol Buom"
+}
+
+Join between the tables
+Users can now be added to the application and users can log in, but this in itself is not a very useful feature yet. We would like to add the features that only a logged-in user can add notes, and that each note is associated with the user who created it. To do this, we need to add a foreign key to the notes table.
+
+defaultdb=> \d notes
+                                     Table "public.notes"
+  Column   |          Type          | Collation | Nullable |              Default              
+-----------+------------------------+-----------+----------+-----------------------------------
+ id        | integer                |           | not null | nextval('notes_id_seq'::regclass)
+ content   | text                   |           | not null | 
+ important | boolean                |           |          | 
+ date      | time without time zone |           |          | 
+ user_id   | integer                |           |          | 
+Indexes:
+    "notes_pkey" PRIMARY KEY, btree (id)
+Foreign-key constraints:
+    "notes_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+
+defaultdb=> \d users
+                                     Table "public.users"
+  Column  |          Type          | Collation | Nullable |              Default              
+----------+------------------------+-----------+----------+-----------------------------------
+ id       | integer                |           | not null | nextval('users_id_seq'::regclass)
+ username | character varying(255) |           | not null | 
+ name     | character varying(255) |           | not null | 
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+    "users_username_key1" UNIQUE CONSTRAINT, btree (username)
+Referenced by:
+    TABLE "notes" CONSTRAINT "notes_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+
+defaultdb=> 
+
+1. Understand the actual problem
+Look at this line:
+SequelizeDatabaseError:
+column "date" cannot be cast automatically to type timestamp with time zone
+
+
+PostgreSQL is telling us:
+- Your existing notes table has a column called date.
+- Your Sequelize Note model now expects a different data type for that column.
+- Sequelize is trying to change the existing column automatically.
+- PostgreSQL cannot perform that conversion without an explicit instruction.
+The SQL Sequelize is attempting to execute is:
+ALTER TABLE "notes"
+ALTER COLUMN "date"
+TYPE TIMESTAMP WITH TIME ZONE;
+
+
+2. Why is this happening?
+Look at your error stack:
+at async note.sync
+at async syncModels (models/index.js:10:3)
+at async start (index.js:22:3)
+
+
+This tells us the problem happens during model synchronization, before your server finishes starting.
+
+It is not caused by your login request.
+3. Let's investigate before changing anything
+Open your PostgreSQL terminal (psql) and execute this query:
+SELECT
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns
+WHERE table_name = 'notes'
+AND column_name = 'date';
+
+
+This will tell us the current data type of your date column.
+
+Excellent! Now we've found the exact cause of your error.
+
+Your database currently has:
+date | time without time zone
+
+
+But Sequelize is trying to change it to:
+TIMESTAMP WITH TIME ZONE
+
+
+These are two different PostgreSQL data types.
+1. Understand the difference
+Data type	What it stores
+TIME	Time only, e.g. 09:30:00
+TIMESTAMP	Date and time
+TIMESTAMPTZ	Date and time with time-zone-aware handling
+
+Your existing column stores only time, but your Sequelize model expects a full date and time.
+
+Let's fix the PostgreSQL column safely.
+Step 1. Convert the existing column
+You are already inside psql (defaultdb=>).
+
+Execute this SQL command:
+ALTER TABLE notes
+ALTER COLUMN date
+TYPE TIMESTAMP WITH TIME ZONE
+USING (
+  CASE
+    WHEN date IS NULL THEN NULL
+    ELSE TIMESTAMP '2026-10-26' + date
+  END
+);
+
+
+What this does:
+- Preserves existing NULL values.
+- Adds 2026-10-26 to the existing times.
+- Converts the column to TIMESTAMP WITH TIME ZONE.
+Step 2. Verify the conversion
+Run:
+SELECT id, content, date FROM notes;
+
+
+Your records should now have complete timestamps, for example:
+2026-10-26 12:27:36+03
+
+
+The two records that previously had NULL dates should remain NULL.
+Step 3. Restart your applicatio
+
+error: column "created_at" does not exist: 
+
+cause:
+  underscored: true,
+  timestamps: true,
+
+fix:
+In your psql terminal, run these commands one at a time:
+ALTER TABLE users
+ADD COLUMN created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+Then:
+ALTER TABLE users
+ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();
+
+access by username
+PUT  http://localhost:3000/api/users/mary3
+Content-Type: application/json
+
+{
+  "username": "mary3",
+  "name": "Mary Three yes!"
+}
+
+Validate the username in the User model
+Open your models/user.js file.
+
+Find the username field and modify it:
+username: {
+  type: DataTypes.STRING,
+  allowNull: false,
+  unique: true,
+  validate: {
+    isEmail: {
+      msg: "username must be a valid email address",
+    },
+  },
+},
+
+
+Let's understand the three important properties:
+Property	Purpose
+unique: true	Prevents two users from having the same username.
+isEmail	Checks whether the username is a valid email address.
+msg	Defines the error message when email validation fails.
+
+2. Modify your error handling middleware
+Your previous middleware checks only SequelizeValidationError.
+
+You also need to handle duplicate usernames, which produce SequelizeUniqueConstraintError.
+
+Use this:
+const errorHandler = (error, req, res, next) => {
+  console.error(error.message);
+
+  if (
+    error.name === "SequelizeValidationError" ||
+    error.name === "SequelizeUniqueConstraintError"
+  ) {
+    return res.status(400).json({
+      error: error.errors.map((e) => e.message),
+    });
+  }
+
+  next(error);
+};
+
+
+Why use error.errors.map()?
+
+Sequelize can return multiple validation errors.
+- error.errors contains the individual validation errors.
+- .map() goes through each error.
+- e.message extracts the message from each error.
+This produces the array format required by the exercise.
+3. Test using REST Client
+Test A: Invalid email
+POST http://localhost:3000/api/users
+Content-Type: application/json
+
+{
+  "username": "mary",
+  "name": "Mary",
+  "password": "secret123"
+}
+
+
+Expected response:
+{
+  "error": [
+    "username must be a valid email address"
+  ]
+}
+
+
+Test B: Valid email
+POST http://localhost:3000/api/users
+Content-Type: application/json
+
+{
+  "username": "mary@example.com",
+  "name": "Mary",
+  "password": "secret123"
+}
+
+
+Expected: User created successfully.
+
+Test C: Duplicate email
+
+Send the same request again.
+
+Expected: HTTP 400 with a uniqueness error.
+
+4. Remember the mental model
+When a user creates an account:
+POST /api/users
+
+User submits registration details
+
+
+Sequelize validation
+
+Is it a valid email? Is it unique?
+
+Valid
+
+Save user and return response
+
+
+Invalid
+
+Error middleware returns HTTP 400
+
+One question to test your understanding:
+
+If someone registers with mary@example.com, and another person tries to register with the same email address, which Sequelize error should be triggered?
+
+A. SequelizeValidationError
+
+B. SequelizeUniqueConstraintError
+
+C. SequelizeDatabaseError
+
+error:
+GET http://localhost:3000/api/login 404 (Not Found)
+cause:
+const passwordCorrect = body.password === "secret";
+If you submitted anything other than "secret", authentication fails.
+
+Understand what you have already implemented
+Your model associations:
+User.hasMany(Blog);
+Blog.belongsTo(User);
+
+
+These establish a one-to-many relationship.
+
+Think of it this way:
+User: Kuol
+
+id: 1
+
+hasMany
+
+Blog 1
+userId: 1
+
+Blog 2
+userId: 1
+
+Blog 3
+userId: 1
+
+Blog.belongsTo(User) means the blog table receives a foreign key, normally userId.
+
+Implement token authentication middleware
+This is our next task.
+
+You already know how to create a JWT:
+const token = jwt.sign(userForToken, SECRET);
+
+
+But creating a token and verifying a token are two different operations.
+- jwt.sign() creates a token.
+- jwt.verify() checks whether a token is valid and retrieves its payload.
+We need middleware that sits between the incoming request and the blog route.
+Create util/middleware.js
+Let's create a new file:
+util/
+  config.js
+  db.js
+  middleware.js   <-- new file
+
+
+For now, implement the token extractor:
+const tokenExtractor = (request, response, next) => {
+  const authorization = request.get("authorization");
+
+  if (authorization && authorization.toLowerCase().startsWith("bearer ")) {
+    request.token = authorization.substring(7);
+  } else {
+    request.token = null;
+  }
+
+  next();
+};
+
+module.exports = {
+  tokenExtractor,
+};
+
+
+Understand what happens:
+
+When a client sends a request, it includes an authorization header:
+Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
+
+Your middleware:
+1. Reads the authorization header.
+2. Checks whether it starts with Bearer.
+3. Extracts the token, removing Bearer .
+4. Stores the token in request.token.
+5. Calls next() to continue.
+Notice that we haven't verified the token yet. We are only extracting it.
+
+POST http://localhost:3000/api/login
+Content-Type: application/json
+
+{
+  "username": "mary!@example.com",
+  "password": "secret"
+}
+
+resoult:
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 219
+ETag: W/"db-nGhU28+KEVCf4MQg86KWVcSg+/k"
+Date: Tue, 27 Oct 2026 10:28:51 GMT
+Connection: close
+
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1hcnkhQGV4YW1wbGUuY29tIiwiaWQiOjEzLCJpYXQiOjE3OTMwOTY5MzF9.By9lBfNcb-CUQvmi1LmPaqknfRhEx7oOogFn8M2VUMc",
+  "username": "mary!@example.com",
+  "name": "Mary Yeah"
+}
+
+POST http://localhost:3000/api/blogs
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1hcnkhQGV4YW1wbGUuY29tIiwiaWQiOjEzLCJpYXQiOjE3OTMwOTY5MzF9.By9lBfNcb-CUQvmi1LmPaqknfRhEx7oOogFn8M2VUMc
+
+
+{
+  "author": "Mary Yeah",
+  "url": "https://example.com/mary-blog",
+  "title": "Testing Blog Ownership",
+  "likes": 3
+}
+
+Understand the complete process
+Your application now follows this flow when someone creates a blog:
+User logs in
+
+POST /api/login
+
+Server generates JWT
+
+Token identifies the user
+
+User sends a blog request
+
+POST /api/blogs + Bearer token
+
+userExtractor verifies the token
+
+Finds the user and sets req.user
+
+Blog is saved with userId
+
+userId: 13
+
+
+4. Let's test your understanding
+Before moving forward, try these three questions.
+Question 1. What does `request.user = user` do inside userExtractor?
+
+Creates a new user in the database
+
+Attaches the authenticated user to the request
+
+Generates a JWT token
+
+
+Question 2. Why does the new blog have `userId: 13`?
+
+Because the ID was randomly generated
+
+Because the author name matches Mary
+
+Because the JWT identifies user 13 and the route assigns that user's ID
+
+
+Question 3. Why do older blogs still have `userId: null`?
+
+They were created before ownership was assigned
+
+The association is broken
+
+PostgreSQL cannot store user IDs

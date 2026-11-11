@@ -1,0 +1,294 @@
+Almost right! Let's distinguish the two.
+
+Your JSON response contains:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1hcnkyIiwiaWQiOjcsImlhdCI6MTc5MzE5MTIyMn0.NdAGB_8tg06DGX7oak7zhO_pDcTnFMzf9dYHBe6YciA",
+  "username": "mary2",
+  "name": "Mary Two"
+}
+
+
+1. Token: This is a JWT. It contains encoded information (the payload) and a digital signature.
+
+2. Authorization header: This is how you send the token back to the server when making an authenticated request.
+
+For example:
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1hcnkyIiwiaWQiOjcsImlhdCI6MTc5MzE5MTIyMn0.NdAGB_8tg06DGX7oak7zhO_pDcTnFMzf9dYHBe6YciA
+
+
+3. Encoded information: Your JWT payload contains information such as:
+{
+  "username": "mary2",
+  "id": 7,
+  "iat": 1793191222
+}
+
+
+iat means the time the token was issued.
+Remember the difference
+- JWT = the token.
+- Encoded = the representation of the payload inside the token.
+- Authorization header = where you send the token in your HTTP request.
+- Bearer = the authentication scheme.
+Important: Your JWT is signed, not encrypted. Its payload can be decoded by anyone who has the token. Never put passwords or other secrets inside it.
+
+Digital signature means: "A cryptographic mark created using a secret key to prove that data has not been changed and that it was signed by someone possessing the correct key."
+Example in your JWT
+Your JWT has three parts separated by dots (.):
+header.payload.signature
+
+
+For example:
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+.
+eyJ1c2VybmFtZSI6Im1hcnkyIiwiaWQiOjd9
+.
+NdAGB_8tg06DGX7oak7zhO_pDcTnFMzf9dYHBe6YciA
+
+
+- Header: Describes the token algorithm.
+- Payload: Carries information such as username and ID.
+- Signature: Helps the server verify that the token has not been tampered with.
+Simple example
+Imagine the server signs this information:
+{
+  "username": "mary2",
+  "id": 7
+}
+
+
+The server uses its secret key:
+const token = jwt.sign(userForToken, SECRET)
+
+
+When the client sends the token back, the server checks it:
+jwt.verify(request.token, SECRET)
+
+
+If someone changes the payload (for example, changes id: 7 to id: 1), the signature will no longer match, and verification fails.
+
+Remember: A digital signature is like a security seal. It helps prove that the information has not been altered after signing.
+
+Good! Let's follow Mary's login process step by step. We will start from the moment she sends her username and password until she uses her JWT token to access a protected route.
+Step 1. Mary sends a login request
+Mary sends this request using REST Client:
+POST http://localhost:3000/api/login
+Content-Type: application/json
+
+{
+  "username": "mary2",
+  "password": "secret"
+}
+
+
+What happens here?
+- POST means Mary is sending data to the server.
+- /api/login is the login endpoint.
+- Content-Type: application/json tells the server that the request body contains JSON.
+- username and password are Mary's login credentials.
+Step 2. Express receives the request
+Your Express application has:
+app.use(express.json())
+
+
+This middleware parses the incoming JSON into a JavaScript object.
+
+Now Express can access:
+request.body.username  // mary2
+request.body.password  // secret
+
+
+Step 3. Server checks Mary's credentials
+Your login route might contain:
+const body = request.body
+
+const user = await User.findOne({
+  where: {
+    username: body.username
+  }
+})
+
+const passwordCorrect = body.password === 'secret'
+
+
+Here:
+- User.findOne() searches the database for Mary.
+- passwordCorrect checks whether the supplied password is correct.
+If the user doesn't exist or the password is incorrect, the server rejects the login.
+Step 4. Server prepares the payload
+const userForToken = {
+  username: user.username,
+  id: user.id,
+}
+
+
+This creates an object containing Mary's username and ID.
+
+For example:
+{
+  "username": "mary2",
+  "id": 7
+}
+
+
+This information is called the payload.
+Step 5. Server generates a JWT
+const token = jwt.sign(userForToken, SECRET)
+
+
+The server:
+1. Takes Mary's payload.
+2. Signs it using the secret key.
+3. Generates a JWT.
+The result looks like this:
+header.payload.signature
+
+
+This is the token Mary receives.
+Step 6. Server sends a response
+response.status(200).send({
+  token,
+  username: user.username,
+  name: user.name
+})
+
+
+Mary receives:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1hcnkyIiwiaWQiOjcsImlhdCI6MTc5MzE5MTIyMn0.NdAGB_8tg06DGX7oak7zhO_pDcTnFMzf9dYHBe6YciA",
+  "username": "mary2",
+  "name": "Mary Two"
+}
+
+
+Login successful
+Mary now has her authentication token.
+
+Step 7. Where does Authorization header come in?
+This is the important part!
+
+Mary wants to delete blog number 7.
+
+She sends another request:
+DELETE http://localhost:3000/api/blogs/7
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1hcnkyIiwiaWQiOjcsImlhdCI6MTc5MzE5MTIyMn0.NdAGB_8tg06DGX7oak7zhO_pDcTnFMzf9dYHBe6YciA
+
+
+Notice that Mary is no longer sending her password.
+
+Instead, she sends the JWT using the Authorization header.
+
+The structure is:
+Authorization: Bearer JWT_TOKEN
+
+
+- Authorization = HTTP header name.
+- Bearer = authentication scheme.
+- JWT_TOKEN = Mary's token.
+Step 8. Server reads the Authorization header
+Your middleware:
+const authorization = request.get("authorization")
+
+
+Retrieves the header.
+
+Then:
+request.token = authorization.substring(7)
+
+
+Extracts the JWT, removing Bearer .
+
+Next:
+decodedToken = jwt.verify(request.token, SECRET)
+
+
+The server verifies the token and accesses its payload.
+
+The decoded information includes:
+{
+  "username": "mary2",
+  "id": 7
+}
+
+
+Step 9. Server identifies Mary
+const user = await User.findByPk(decodedToken.id)
+
+request.user = user
+
+
+The server retrieves Mary from PostgreSQL and attaches her database record to the request.
+
+Now your protected routes can access:
+request.user.id
+request.user.username
+
+
+For example, your blog deletion route checks:
+if (blog.userId !== request.user.id) {
+  return response.status(403).json({
+    error: "forbidden"
+  })
+}
+
+
+This ensures Mary can only delete blogs that belong to her.
+
+The entire process in one picture
+1. Mary sends username and password
+   
+   POST /api/login
+2. Server checks credentials
+   
+   Finds Mary in PostgreSQL and checks her password.
+3. Server generates JWT
+   
+   jwt.sign(userForToken, SECRET)
+4. Mary receives the token
+   
+   Login successful.
+5. Mary sends Authorization header
+   
+   Authorization: Bearer JWT_TOKEN
+6. Server verifies the token
+   
+   jwt.verify(request.token, SECRET)
+7. Server identifies Mary
+   
+   request.user = user
+8. Mary accesses protected resources
+   
+   Ownership and permission checks are performed.
+
+Test your understanding
+One question:
+
+Mary has successfully logged in and received her JWT token.
+
+When she wants to delete another blog, what should she send to the server?
+
+Her username and password again.
+
+Her JWT token inside the Authorization header.
+
+Her entire user record from PostgreSQL.
+
+Check answerCorrect!
+Mary sends Authorization: Bearer JWT_TOKEN. The server verifies the token instead of asking her to log in again.
+
+Take your time. Understanding this flow is one of the most important parts of backend authentication.
+
+Final exercise checklist
+Exercise 12 progress
+8/8 completed
+
+
+
+[x] Define User.hasMany(Blog) and Blog.belongsTo(User)
+[x] Synchronize User and Blog models
+[x] GET /api/users includes Blog
+[x] GET /api/blogs includes User
+[x] Exclude userId and return only user's name
+[x] POST /api/blogs assigns req.user.id
+[x] Create blogs using an authenticated request
+[x] Verify both users and blogs responses

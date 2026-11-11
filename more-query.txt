@@ -1,0 +1,215 @@
+The database might now contain some note rows that do not have the value for the column important set. After the above changes, these notes can not be found with the queries. Let us set the missing values in the psql console and change the schema so that the column does not allow a null value:
+
+This statement means that some existing records in your notes table may have NULL in the important column instead of true or false.
+
+Let's break it down.
+1. What is the problem?
+Imagine your notes table looks like this:
+id	content	important
+1	Learning PostgreSQL	true
+2	MongoDB is webscale	false
+3	Testing Sequelize	NULL
+
+The third note has no value for important.
+
+NULL means missing or unknown, not false.
+2. Why can these notes not be found?
+When you run:
+WHERE important = false;
+
+
+PostgreSQL returns only rows where important is actually false.
+
+It does not return rows where important is NULL.
+
+The same applies when searching for true.
+3. What does "set the missing values in the psql console" mean?
+It means opening your PostgreSQL terminal (psql) and updating existing records.
+
+For example:
+UPDATE notes
+SET important = false
+WHERE important IS NULL;
+
+
+Meaning:
+- UPDATE notes – modify records in the notes table.
+- SET important = false – give missing important values false.
+- WHERE important IS NULL – only update records where the value is missing.
+4. What does "change the schema so that the column does not allow a null value" mean?
+After fixing existing records, prevent future notes from having a missing important value.
+
+In PostgreSQL:
+ALTER TABLE notes
+ALTER COLUMN important SET NOT NULL;
+
+
+Meaning: PostgreSQL will reject any new or updated record that tries to leave important as NULL.
+5. The difference
+Concept	Meaning
+NULL	No value / missing
+false	A real Boolean value meaning no
+true	A real Boolean value meaning yes
+NOT NULL	The column must have a value
+
+Your mental model:
+1. UPDATE fixes existing missing values.
+2. ALTER TABLE ... SET NOT NULL prevents missing values in the future.
+One important detail: If your Sequelize model also defines important, make sure it has allowNull: false so your model definition agrees with the database schema.
+
+This code is used to search for notes whose content contains a particular word or phrase.
+content: {
+  [Op.substring]: req.query.search ? req.query.search : "",
+}
+
+
+Let's break it down.
+1. req.query.search
+Retrieves the search value from the URL.
+
+For example:
+GET /api/notes?search=PostgreSQL
+
+
+Here:
+req.query.search
+
+
+returns "PostgreSQL".
+2. The ternary operator
+req.query.search ? req.query.search : ""
+
+
+This means:
+- If a search value exists, use it.
+- Otherwise, use an empty string "".
+It's a shorter way of writing:
+if (req.query.search) {
+  // use req.query.search
+} else {
+  // use ""
+}
+
+
+3. [Op.substring]
+This is a Sequelize operator that searches for content containing the supplied text.
+
+For example:
+content: {
+  [Op.substring]: "PostgreSQL",
+}
+
+
+It finds content such as:
+- "Learning PostgreSQL Basics"
+- "PostgreSQL is a relational database"
+- "Understanding PostgreSQL queries"
+It does not require the entire content to match.
+4. What happens when you don't search?
+If you visit:
+GET /api/notes
+
+
+The search value becomes "" (empty string).
+
+An empty substring matches all text values, so this condition effectively does not filter out notes based on content.
+
+Quick mental model
+Code	Meaning
+req.query.search	Get the search word from the URL
+? :	Choose between two values
+[Op.substring]	Find content containing the search text
+""	Empty search; effectively matches all non-null content
+
+One-line meaning: Search the notes' content for the word or phrase supplied in the URL; if no search term is supplied, don't restrict results by content.
+
+Your code is working as written, but there is one important detail: your URL contains a search parameter.
+
+Let's break it down.
+1. What your URL is requesting
+GET http://localhost:3001/api/notes?search=database
+
+
+This sends the following query parameter:
+req.query.search // "database"
+
+
+Your Sequelize condition:
+content: {
+  [Op.substring]: req.query.search ? req.query.search : "",
+},
+
+
+means:
+- If search=database, find notes whose content contains "database".
+- If search=javascript, find notes whose content contains "javascript".
+- If there is no search parameter, use an empty string "".
+Op.substring performs a substring search.
+2. Why you only get one note
+Look at your complete where condition:
+where: {
+  important,
+  content: {
+    [Op.substring]: req.query.search ? req.query.search : "",
+  },
+},
+
+
+You have two conditions:
+1. important: the note must match the important filter.
+2. content: the note must contain the search term.
+Both conditions must be satisfied.
+
+Also, when you don't provide important in the URL, your code sets:
+let important = { [Op.in]: [true, false] };
+
+
+That allows both important and unimportant notes.
+
+Therefore, your current URL asks Sequelize:
+Return all notes whose content contains the word "database", regardless of whether they are important.
+
+Your result is correct if only one note contains that word.
+3. How to return all notes
+If you want all notes without filtering, use:
+GET http://localhost:3001/api/notes
+
+
+Your existing code should return all notes because:
+- important allows both true and false.
+- search defaults to an empty string.
+4. Test these four requests
+Request	Expected behavior
+/api/notes	All notes
+/api/notes?search=database	Notes containing database
+/api/notes?important=true	Only important notes
+/api/notes?important=false	Only unimportant notes
+
+One important mental model:
+
+Think of where as a database filter. Every condition inside it narrows down the results.
+
+For example:
+where: {
+  important: true,
+  content: {
+    [Op.substring]: "database",
+  },
+}
+ where: {
+      important,
+      //search=database or javascript
+      content: {
+        [Op.substring]: req.query.search ? req.query.search : "",
+      },
+    },
+
+means:
+Find notes that are important AND contain the word database.
+
+That's how Sequelize combines multiple conditions by default.
+
+Remember this distinction:
+- req.query receives filtering instructions from the client.
+- where translates those instructions into Sequelize conditions.
+- Note.findAll() executes the database query.

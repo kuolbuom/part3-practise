@@ -1,0 +1,373 @@
+Many-to-many relationships
+We will continue to expand the application so that each user can be added to one or more teams.
+
+Since an arbitrary number of users can join one team, and one user can join an arbitrary number of teams, we are dealing with a many-to-many(opens in a new tab) relationship, which is traditionally implemented in relational databases using a join table.
+
+Let's now create the code needed for the teams table as well as the join table. The migration (saved in file 20260211_03_add_teams_and_memberships.js) is as follows:
+
+
+const { DataTypes } = require('sequelize')
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.createTable('teams', {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+      },
+      name: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+        unique: true
+      },
+    })
+    await queryInterface.createTable('memberships', {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+      },
+      user_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: { model: 'users', key: 'id' },
+      },
+      team_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: { model: 'teams', key: 'id' },
+      },
+    })
+  },
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.dropTable('memberships')
+    await queryInterface.dropTable('teams')
+  },
+}
+The models contain almost the same code as the migration. The team model in models/team.js:
+
+
+const { Model, DataTypes } = require('sequelize')
+
+const { sequelize } = require('../util/db')
+
+class Team extends Model {}
+
+Team.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  name: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+    unique: true
+  },
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'team'
+})
+
+module.exports = Team
+The model for the join table in models/membership.js:
+
+
+const { Model, DataTypes } = require('sequelize')
+
+const { sequelize } = require('../util/db')
+
+class Membership extends Model {}
+
+Membership.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  userId: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'users', key: 'id' },
+  },
+  teamId: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'teams', key: 'id' },
+  },
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'membership'
+})
+
+module.exports = Membership
+So we have given the join table a name that describes it well, membership. There is not always a relevant name for a join table, in which case the name of the join table can be a combination of the names of the tables that are joined, e.g., user_teams could fit our situation.
+
+We make a small addition to the models/index.js file to connect teams and users at the code level using the belongsToMany(opens in a new tab) method.
+
+
+const Note = require('./note')
+const User = require('./user')
+const Team = require('./team')
+const Membership = require('./membership')
+
+Note.belongsTo(User)
+User.hasMany(Note)
+
+User.belongsToMany(Team, { through: Membership })
+Team.belongsToMany(User, { through: Membership })
+
+module.exports = {
+  Note, User, Team, Membership
+}
+Note the difference between the migration of the join table and the model when defining foreign key fields. During the migration, fields are defined in snake case form:
+
+
+await queryInterface.createTable('memberships', {
+  // ...
+  user_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'users', key: 'id' },
+  },
+  team_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'teams', key: 'id' },
+  }
+})
+in the model, the same fields are defined in camel case:
+
+
+Membership.init({
+  // ...
+  userId: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'users', key: 'id' },
+  },
+  teamId: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'teams', key: 'id' },
+  },
+  // ...
+})
+Now let's create a couple of teams from the psql console, as well as a few memberships:
+
+
+insert into teams (name) values ('toska');
+insert into teams (name) values ('mosa climbers');
+insert into memberships (user_id, team_id) values (1, 1);
+insert into memberships (user_id, team_id) values (1, 2);
+insert into memberships (user_id, team_id) values (2, 1);
+insert into memberships (user_id, team_id) values (3, 2);
+Information about users' teams is then added to route for retrieving all users
+
+
+router.get('/', async (req, res) => {
+  const users = await User.findAll({
+    include: [
+      {
+        model: Note,
+        attributes: { exclude: ['userId'] }
+      },
+      {
+        model: Team,
+        attributes: ['name', 'id'],
+      }
+    ]
+  })
+  res.json(users)
+})
+The most observant will notice that the query printed to the console now combines three tables.
+
+The solution is quite good, but there is one flaw. The result also includes the attributes of the join table row, even though we do not want them:
+
+Add alt
+By carefully reading the documentation, you can find a solution(opens in a new tab):
+
+
+router.get('/', async (req, res) => {
+  const users = await User.findAll({
+    include: [
+      {
+        model: Note,
+        attributes: { exclude: ['userId'] }
+      },
+      {
+        model: Team,
+        attributes: ['name', 'id'],
+        through: {
+          attributes: []
+        }
+      }
+    ]
+  })
+  res.json(users)
+})
+
+defaultdb=> \d
+              List of relations
+ Schema |     Name     |   Type   |  Owner   
+--------+--------------+----------+----------
+ public | blogs        | table    | avnadmin
+ public | blogs_id_seq | sequence | avnadmin
+ public | migrations   | table    | avnadmin
+ public | users        | table    | avnadmin
+ public | users_id_seq | sequence | avnadmin
+(5 rows)
+
+defaultdb=> \d users
+                                        Table "public.us
+    Column     |           Type           | Collation | 
+---------------+--------------------------+-----------+-
+ id            | integer                  |           | 
+ username      | character varying(255)   |           | 
+ name          | character varying(255)   |           | 
+ password_hash | character varying(255)   |           | 
+ created_at    | timestamp with time zone |           | 
+ updated_at    | timestamp with time zone |           | 
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_username_key" UNIQUE CONSTRAINT, btree (usern
+Referenced by:
+    TABLE "blogs" CONSTRAINT "blogs_user_id_fkey" FOREIG
+
+defaultdb=> insert into teams (name) values ('toska');
+ERROR:  relation "teams" does not exist
+LINE 1: insert into teams (name) values ('toska');
+                    ^
+defaultdb=> DROP TABLE IF EXISTS blogs CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS migrations CASCADE;
+DROP TABLE
+NOTICE:  drop cascades to constraint notes_user_id_fkey on table notes
+DROP TABLE
+DROP TABLE
+defaultdb=> \d
+              List of relations
+ Schema |     Name     |   Type   |  Owner   
+--------+--------------+----------+----------
+ public | notes        | table    | avnadmin
+ public | notes_id_seq | sequence | avnadmin
+(2 rows)
+
+defaultdb=> DROP TABLE IF EXISTS notes CASCADE;
+DROP TABLE
+defaultdb=> \d
+Did not find any relations.
+defaultdb=> \d users
+defaultdb=> \d users
+                                     Table "public.users"
+  Column  |          Type          | Collation | Nullable |              Default      
+----------+------------------------+-----------+----------+---------------------------
+ id       | integer                |           | not null | nextval('users_id_seq'::re
+ username | character varying(255) |           | not null | 
+ name     | character varying(255) |           | not null | 
+ admin    | boolean                |           |          | false
+ disabled | boolean                |           |          | false
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+Referenced by:
+    TABLE "memberships" CONSTRAINT "memberships_user_id_fkey" FOREIGN KEY (user_id) RE
+    TABLE "notes" CONSTRAINT "notes_user_id_fkey" FOREIGN KEY (user_id) REFERENCES use
+
+defaultdb=> insert into teams (name) values ('toska');
+INSERT 0 1
+defaultdb=> insert into teams (name) values ('mosa climbers');
+INSERT 0 1
+defaultdb=> insert into memberships (user_id, team_id) values (1, 1);
+ERROR:  insert or update on table "memberships" violates foreign key constraint "membe
+DETAIL:  Key (user_id)=(1) is not present in table "users".
+defaultdb=> insert into memberships (user_id, team_id) values (1, 1);
+ERROR:  insert or update on table "memberships" violates foreign key constraint "memberships_user_id_fkey"
+DETAIL:  Key (user_id)=(1) is not present in table "users".
+defaultdb=> insert into memberships (user_id, team_id) values (1, 1);
+ERROR:  insert or update on table "memberships" violates foreign key constraint "memberships_user_id_fkey"
+DETAIL:  Key (user_id)=(1) is not present in table "users".
+defaultdb=> SELECT * FROM users;
+ id | username | name | admin | disabled 
+----+----------+------+-------+----------
+(0 rows)
+
+defaultdb=> SELECT * FROM teams;
+ id |     name      
+----+---------------
+  1 | toska
+  2 | mosa climbers
+(2 rows)
+
+defaultdb=> INSERT INTO users (username, name)
+VALUES ('kuol', 'Kuol Buom')
+RETURNING *;
+ id | username |   name    | admin | disabled 
+----+----------+-----------+-------+----------
+  1 | kuol     | Kuol Buom | f     | f
+(1 row)
+
+INSERT 0 1
+defaultdb=> SELECT * FROM users;
+ id | username |   name    | admin | disabled 
+----+----------+-----------+-------+----------
+  1 | kuol     | Kuol Buom | f     | f
+(1 row)
+
+defaultdb=> insert into memberships (user_id, team_id) values (1, 1);
+INSERT 0 1
+defaultdb=> INSERT INTO users (username, name)
+VALUES ('jakousa', 'Jami Kousa (The Docker Captain)')
+RETURNING *;
+ id | username |              name               | admin | disabled 
+----+----------+---------------------------------+-------+----------
+  2 | jakousa  | Jami Kousa (The Docker Captain) | f     | f
+(1 row)
+
+INSERT 0 1
+defaultdb=> insert into memberships (user_id, team_id) values (1, 2);
+INSERT 0 1
+defaultdb=> insert into memberships (user_id, team_id) values (2, 1);
+INSERT 0 1
+defaultdb=> insert into memberships (user_id, team_id) values (3, 2);
+ERROR:  insert or update on table "memberships" violates foreign key constraint "memberships_user_id_fkey"
+DETAIL:  Key (user_id)=(3) is not present in table "users".
+defaultdb=> INSERT INTO users (username, name)
+VALUES ('nyuel', 'Nyuel Juol')
+RETURNING *;
+ id | username |    name    | admin | disabled 
+----+----------+------------+-------+----------
+  3 | nyuel    | Nyuel Juol | f     | f
+(1 row)
+
+INSERT 0 1
+defaultdb=> insert into memberships (user_id, team_id) values (3, 2);
+INSERT 0 1
+defaultdb=> SELECT * FROM users;
+SELECT * FROM teams;
+ id | username |              name               | admin | disabled 
+----+----------+---------------------------------+-------+----------
+  1 | kuol     | Kuol Buom                       | f     | f
+  2 | jakousa  | Jami Kousa (The Docker Captain) | f     | f
+  3 | nyuel    | Nyuel Juol                      | f     | f
+(3 rows)
+
+ id |     name      
+----+---------------
+  1 | toska
+  2 | mosa climbers
+(2 rows)
+
+defaultdb=> SELECT * FROM teams;
+ id |     name      
+----+---------------
+  1 | toska
+  2 | mosa climbers
+(2 rows)
+
+defaultdb=> 

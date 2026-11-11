@@ -1,0 +1,307 @@
+Revisiting many-to-many relationships
+Let's make another many-to-many relationship in the application. Each note is associated to the user who created it by a foreign key. It is now decided that the application also supports that the note can be associated with other users, and that a user can be associated with an arbitrary number of notes created by other users. The idea is that these notes are those that the user has marked for himself.
+
+Let's make a join table user_notes for the situation. The migration, that is saved in file 20260211_04_add_user_notes.js is straightforward:
+
+
+const { DataTypes } = require('sequelize')
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.createTable('user_notes', {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+      },
+      user_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: { model: 'users', key: 'id' },
+      },
+      note_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: { model: 'notes', key: 'id' },
+      },
+    })
+  },
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.dropTable('user_notes')
+  },
+}
+Also, there is nothing special about the model:
+
+
+const { Model, DataTypes } = require('sequelize')
+
+const { sequelize } = require('../util/db')
+
+class UserNotes extends Model {}
+
+UserNotes.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  userId: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'users', key: 'id' },
+  },
+  noteId: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: { model: 'notes', key: 'id' },
+  },
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'userNotes'
+})
+
+module.exports = UserNotes
+The file models/index.js, on the other hand, comes with a slight change to what we saw before:
+
+
+const Note = require('./note')
+const User = require('./user')
+const Team = require('./team')
+const Membership = require('./membership')
+const UserNotes = require('./userNotes')
+
+Note.belongsTo(User)
+User.hasMany(Note)
+
+User.belongsToMany(Team, { through: Membership })
+Team.belongsToMany(User, { through: Membership })
+
+User.belongsToMany(Note, { through: UserNotes, as: 'markedNotes' })
+Note.belongsToMany(User, { through: UserNotes, as: 'usersMarked' })
+
+module.exports = {
+  Note, User, Team, Membership, UserNotes
+}
+Once again, belongsToMany is used to link the user to the user's notes. The link is done via the join table that corresponds to the model UserNotes. However, this time we give an alias name for the attribute formed using the keyword as. The default name user.notes would overlap with its previous meaning, i.e., notes created by the user.
+
+We extend the route for an individual user to return the user's teams, their own notes, and other notes marked by the user:
+
+
+router.get('/:id', async (req, res) => {
+  const user = await User.findByPk(req.params.id, {
+    attributes: { exclude: [''] } ,
+    include:[{
+        model: Note,
+        attributes: { exclude: ['userId'] }
+      },
+      {
+        model: Note,
+        as: 'markedNotes',
+        attributes: { exclude: ['userId']},
+        through: {
+          attributes: []
+        }
+      },
+      {
+        model: Team,
+        attributes: ['name', 'id'],
+        through: {
+          attributes: []
+        }
+      },
+    ]
+  })
+
+  if (user) {
+    res.json(user)
+  } else {
+    res.status(404).end()
+  }
+})
+In the context of the include, we must now use the alias name markedNotes which we have just defined with the as attribute.
+
+In order to test the feature, let's create some test data in the database:
+
+
+insert into user_notes (user_id, note_id) values (3, 1);
+insert into user_notes (user_id, note_id) values (3, 3); 
+The end result looks good:
+
+Add alt
+What if we wanted to include information about the author of the note in the notes marked by the user as well? This can be done by adding an include to the marked notes:
+
+
+router.get('/:id', async (req, res) => {
+  const user = await User.findByPk(req.params.id, {
+    attributes: { exclude: [''] } ,
+    include:[{
+        model: Note,
+        attributes: { exclude: ['userId'] }
+      },
+      {
+        model: Note,
+        as: 'markedNotes',
+        attributes: { exclude: ['userId']},
+        through: {
+          attributes: []
+        },
+        include: {
+          model: User,
+          attributes: ['name']
+        }
+      },
+      {
+        model: Team,
+        attributes: ['name', 'id'],
+        through: {
+          attributes: []
+        }
+      },
+    ]
+  })
+
+  if (user) {
+    res.json(user)
+  } else {
+    res.status(404).end()
+  }
+})
+
+defaultdb=> insert into user_notes (user_id, note_id) values (3, 1);
+ERROR:  insert or update on table "user_notes" violates foreign key constraint "user_notes_note_id_fkey"
+DETAIL:  Key (note_id)=(1) is not present in table "notes".
+defaultdb=> insert into user_notes (user_id, note_id) values (3, 1);
+ERROR:  insert or update on table "user_notes" violates foreign key constraint "user_notes_note_id_fkey"
+DETAIL:  Key (note_id)=(1) is not present in table "notes".
+defaultdb=> SELECT * FROM notes;
+SSL error: unexpected eof while reading
+The connection to the server was lost. Attempting reset: Succeeded.
+defaultdb=> SELECT * FROM users;
+defaultdb=> INSERT INTO notes (content, important, date, user_id)ELECT * FROM notes;
+VALUES ('Learning PostgreSQL relationships', true, CURRENT_TIMESTAMP, 3)-----+------+---------
+RETURNING *;
+INSERT 0 1
+defaultdb=> INSERT INTO user_notes (user_id, note_id)
+VALUES (3, 1);
+INSERT 0 1
+defaultdb=> INSERT INTO notes (content, important, date, user_id)
+VALUES ('belongsToMany is used to link the user to the user's notes.', true, CURRENT_TIMESTAMP, 
+3)
+RETURNING *;
+defaultdb'> INSERT INTO notes (content, important, date, user_id)
+VALUES ('belongsToMany is used to link the user to the user's notes.', true, CURRENT_TIMESTAMP,  
+3)
+RETURNING *;
+ERROR:  syntax error at or near "s"
+LINE 2: ...elongsToMany is used to link the user to the user's notes.',...
+                                                             ^
+defaultdb=> INSERT INTO notes (content, important, date, user_id)
+VALUES ('Learning PostgreSQL relationships', t, CURRENT_TIMESTAMP,3)
+ *  History restored 
+
+PS C:\Users\Student\Desktop\part13> 
+psql (18.6 (Debian 18.6-1.pgdg13+2))
+SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, compression: off, ALPN: postgresql)
+Type "help" for help.
+
+defaultdb=> INSERT INTO notes (content, important, date, user_id)
+VALUES ('belongsToMany is used to link the user to the user is notes.', true, CURRENT_TIMESTAMP,  
+3)          
+RETURNING *;
+INSERT 0 1
+defaultdb=> insert into user_notes (user_id, note_id) values (3, 2);
+INSERT 0 1
+defaultdb=> 
+
+Step 1. Check your users
+SELECT * FROM users;
+
+Step 2. Create a note
+Assuming user ID 1 exists, create a note:
+INSERT INTO notes (content, important, date, user_id)
+VALUES ('Learning PostgreSQL relationships', true, CURRENT_TIMESTAMP, 1)
+RETURNING *;
+
+This creates a note and associates it with user ID 1.
+Step 3. Create the user-note relationship
+Now try:
+INSERT INTO user_notes (user_id, note_id)
+VALUES (1, 1);
+
+Step 4. Verify the relationship
+SELECT * FROM user_notes;
+
+defaultdb=> SELECT * FROM user_notes;
+ id | user_id | note_id 
+----+---------+---------
+  3 |       3 |       1
+  4 |       3 |       2
+(2 rows)
+
+This means:
+- User 3 is connected to note 1.
+- User 3 is also connected to note 2.
+
+Something important to notice
+Your junction table is working. It stores the relationships between users and notes.
+User 3
+user_notes
+
+Membership 1: user_id 3 → note_id 1
+
+Membership 2: user_id 3 → note_id 2
+
+
+One important concept to understand:
+
+You have two different relationships:
+- notes.user_id connects a note directly to its owner.
+- user_notes connects users and notes through a junction table.
+
+defaultdb=> SELECT
+  users.username,
+  notes.content
+FROM user_notes
+JOIN users ON users.id = user_notes.user_id
+JOIN notes ON notes.id = user_notes.note_id;
+ username |                           content                            
+----------+--------------------------------------------------------------
+ nyuel    | Learning PostgreSQL relationships
+ nyuel    | belongsToMany is used to link the user to the user is notes.
+(2 rows)
+
+defaultdb=> 
+
+Let's follow the execution logically:
+Step 1: Start from user_notes
+user_id	      note_id
+3	            1
+3	            2
+
+
+Step 2: JOIN users
+PostgreSQL matches user_notes.user_id with users.id.
+
+Result: nyuel is user 3.
+
+Step 3: JOIN notes
+
+PostgreSQL matches user_notes.note_id with notes.id.
+
+Result: It retrieves the two note contents.
+
+How this relates to Sequelize
+In Sequelize, you can represent this many-to-many relationship using:
+User.belongsToMany(Note, { through: "UserNotes" });
+Note.belongsToMany(User, { through: "UserNotes" });
+
+Then retrieve a user's notes:
+const user = await User.findByPk(3, {
+  include: Note,
+});
+
+console.log(user.Notes);
+
+The exact association property depends on your alias configuration.

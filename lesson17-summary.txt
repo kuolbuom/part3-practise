@@ -1,0 +1,908 @@
+Exercise 17 is a testing and database configuration exercise. You're preparing your Blog application so automated tests can check whether your API works correctly.
+
+There are two important goals:
+1. Add endpoints that the automated tests expect.
+2. Make sure automated tests use a separate database so your real blog data is not deleted.
+
+1. Understand what we need to build
+Requirement	                   Purpose
+POST /api/reset	               Empty the database tables
+GET /	                         Return HTTP 200
+TEST_DATABASE_URL	             Connect to a separate test database
+TESTING=true	                 Tell the application to use the test database
+npm test	                     Run automated tests
+npm run start:test	           Start the app using the test database
+
+1: Normal application
+DATABASE_URL
+Your normal blog database
+
+2: Automated testing
+TEST_DATABASE_URL
+A separate test database
+
+db.js
+
+The logic will be:
+const connectionString = process.env.TESTING === "true"
+  ? process.env.TEST_DATABASE_URL
+  : process.env.DATABASE_URL;
+
+  How the database is selected
+Is TESTING equal to "true"?
+YES
+TEST_DATABASE_URL
+
+NO
+DATABASE_URL
+
+It works like this:
+Command	                 Database
+npm start	               defaultdb
+npm run start:test	     test_db
+npm test	               Test configuration
+
+  I suggest we follow this sequence:
+- [ ] Configure the separate test database.
+- [ ] Modify db.js.
+- [ ] Add POST /api/reset.
+- [ ] Add GET /.
+- [ ] Configure the two npm scripts.
+- [ ] Copy the tests and .github directories.
+- [ ] Run the automated tests.
+- [ ] Fix any failing tests.
+
+Update your .env
+Add:
+DATABASE_URL=your_aiven_url/defaultdb
+TEST_DATABASE_URL=your_aiven_url/test_db
+
+Let's check before changing anything else.
+Connect to Aiven using psql and run:
+SELECT current_database();
+Then:
+\l
+This will show us which databases exist.
+
+Update your config.js
+require("dotenv").config();
+
+module.exports = {
+  DATABASE_URL: process.env.DATABASE_URL,
+  TEST_DATABASE_URL: process.env.TEST_DATABASE_URL,
+};
+
+Let's verify one more thing
+In your psql terminal, run:
+SELECT datname
+FROM pg_database
+WHERE datname = 'test_db';
+
+
+Expected result:
+ datname
+---------
+ test_db
+
+
+If this returns test_db, the database exists regardless of whether the Aiven interface displays it.
+
+Understand what the reset endpoint does
+The exercise requires us to empty both database tables:
+- blogs
+- users
+Because our application will connect to test_db when TESTING=true, the reset endpoint will clear the test database, not your normal defaultdb.
+
+Update index.js
+First, add sequelize to your existing database import:
+const { connectionToDatabase, sequelize } = require("./util/db");
+
+Your updated route section
+It should now look like this:
+app.get("/", (req, res) => {
+  res.sendStatus(200);
+});
+
+app.post("/api/reset", async (req, res) => {
+  await sequelize.truncate({
+    cascade: true,
+    restartIdentity: true,
+  });
+
+  res.status(204).end();
+});
+
+What does this endpoint do?
+- sequelize.truncate() empties the tables for your registered Sequelize models.
+- cascade: true handles related records and foreign-key dependencies.
+- restartIdentity: true resets auto-incrementing IDs.
+- 204 means the request succeeded without returning a response body.
+- The TESTING check prevents accidentally resetting your real database.
+
+app.use("/api/blogs", blogsRouter);
+app.use("/api/users", usersRouter);
+app.use("/api/login", loginRouter);
+app.use("/api/authors", authorsRouter);
+
+
+Two requirements implemented
+- GET / returns HTTP 200.
+- POST /api/reset clears the registered model tables.
+
+The important detail is that you're using Windows PowerShell, where TESTING=true may not work because that environment-variable syntax is for Unix-like terminals.
+
+"scripts": {
+  "start": "node cli.js",
+  "test": "TESTING=true node --test --test-concurrency=1 tests/api_ch3.test.js",
+  "start:test": "TESTING=true node cli.js"
+}
+
+Run the test server in PowerShell/verify the database connection.
+
+Instead of npm run start:test, run these commands one at a time:
+$env:TESTING="true"
+
+Then:
+$env:PORT="3001"
+
+Then:
+node cli.js
+This starts your app with testing mode enabled, using port 3001.
+Look for:
+Connection to the database established successfully.
+Server running on port 3001
+
+Your output confirms three things:
+1. Database connection succeeded — Sequelize authenticated successfully.
+2. Tables are ready — Sequelize found or created the users and blogs tables.
+3. Server is running — your application is listening on port 3001.
+
+configured config.js correctly.
+
+require("dotenv").config();
+
+module.exports = {
+  DATABASE_URL: process.env.DATABASE_URL,
+  TEST_DATABASE_URL: process.env.TEST_DATABASE_URL,
+  SECRET: process.env.SECRET,
+  PORT: process.env.PORT || 3000,
+};
+
+Let's verify the database using Sequelize instead. This way, you don't need to install or configure psql.
+Step 1: Temporarily add a database-name check
+Open util/db.js.
+
+Inside connectionToDatabase, immediately after:
+await sequelize.authenticate();
+add:
+const [result] = await sequelize.query(
+  "SELECT current_database() AS database"
+);
+
+console.log("Connected database:", result[0].database);
+
+Restart your server
+Stop the current server with Ctrl + C, then run:
+node cli.js
+
+
+Because you already set $env:TESTING="true" in that terminal, it should remain set.
+
+Check the environment variable
+In the same PowerShell terminal, run:
+$env:TESTING
+
+It should print:
+true
+
+If it prints nothing, set it again:
+$env:TESTING="true"
+
+Step 3: Start the server again
+node cli.js
+
+You should now see:
+Connected database: test_db
+
+Protect the reset endpoint
+Currently, anyone who sends a POST request to /api/reset could empty your database, including defaultdb.
+
+Replace your current reset route with:
+app.post("/api/reset", async (req, res) => {
+  if (process.env.TESTING !== "true") {
+    return res.sendStatus(404);
+  }
+
+  await sequelize.truncate({
+    cascade: true,
+    restartIdentity: true,
+  });
+
+  res.status(204).end();
+});
+
+This ensures the reset endpoint only works in testing mode.
+
+Understand the reset operation
+Before reset
+users
+5 records
+
+blogs
+12 records
+
+After reset
+users
+0 records
+
+blogs
+0 records
+
+These numbers are just an illustration. The actual tables in test_db will be emptied.
+
+Test the endpoint
+Keep your server running in testing mode.
+
+Open a second terminal and send this request using REST Client:
+POST http://localhost:3001/api/reset
+
+Expected response:
+HTTP/1.1 204 No Content
+
+Important: This operation permanently deletes the records in the testing database. It should not affect defaultdb.
+
+Good question! Testing does not automatically need its own port. Your normal application and testing application can use the same port, but they cannot listen on that port at the same time.
+
+Let's understand the difference.
+1. Port and database are two different things
+Your application has two independent settings:
+- Port: Where your application receives HTTP requests.
+- Database: Where your application stores and retrieves data.
+For example:
+Normal application
+Port 3000
+defaultdb
+
+http://localhost:3000
+
+Testing application
+Port 3001
+test_db
+
+http://localhost:3001
+
+Here, we deliberately use different ports so both applications can run simultaneously.
+2. Can they use the same port?
+Yes!
+
+For example:
+Application	Port	Database
+Normal	3000	defaultdb
+Testing	3000	test_db
+
+This works perfectly if you stop the normal application before starting the testing application.
+
+But if you try to run both simultaneously on port 3000, you'll get a port conflict because only one server can listen on that port at a time.
+3. What I recommend for your project
+Keep this arrangement:
+- Normal app: port 3000, database defaultdb.
+- Testing app: port 3001, database test_db.
+It makes it easier to distinguish them and reduces the risk of sending a testing request to your normal application.
+
+Check whether your server is running
+Look at the PowerShell terminal where you started node cli.js.
+
+Is it still showing:
+Connected database: test_db
+Server running on port 3001
+
+
+If the server stopped, restart it. In PowerShell, run:
+$env:TESTING="true"
+$env:PORT="3001"
+node cli.js
+
+Step 2: Test the connection
+Keep that server running. Open a second PowerShell terminal and run:
+Invoke-WebRequest http://localhost:3001/
+
+Your / route should return status code 200.
+
+Test the reset endpoint directly in PowerShell
+Run this command in your second PowerShell terminal:
+Invoke-WebRequest -Method POST http://localhost:3001/api/reset
+
+Expected result:
+StatusCode : 204
+Remember, this will empty the tables in test_db.
+
+Verify that the tables are empty
+Run this in REST Client:
+GET http://localhost:3001/api/blogs
+
+Then:
+GET http://localhost:3001/api/users
+
+Expected response for both:
+[]
+This confirms that:
+- test_db was successfully emptied.
+- The blogs table has no records.
+- The users table has no records.
+- Your API is responding correctly after the reset.
+
+What you've learned
+Your testing workflow now looks like this:
+TESTING=true
+Select test_db
+Start Express server
+localhost:3001
+POST /api/reset
+Clear test data
+Run API tests
+Test against a clean database
+
+image: postgres:17 means Docker should use PostgreSQL version 17.
+services:
+  postgres:
+    image: postgres:17
+
+Here is how to read it:
+- postgres = the official PostgreSQL Docker image.
+- 17 = the major version of PostgreSQL.
+But in your project: You are using Aiven PostgreSQL 18.6, based on your earlier database setup. That does not mean you must use version 18 in Docker.
+
+Excellent! Now let's verify that the folders are in the correct location.
+Step 1: Run this command in PowerShell
+Make sure you're inside part13-blog:
+Get-ChildItem -Force
+
+The -Force option is important because .github is a hidden folder in Windows.
+
+You should see both:
+tests
+.github
+
+Step 2: Check the test files
+Run:
+Get-ChildItem .\tests
+I want to confirm that api_ch3.test.js is present because your test script references it:
+"test": "TESTING=true node --test --test-concurrency=1 tests/api_ch3.test.js"
+Excellent! Your tests folder contains all three expected files:
+- api_ch3.test.js
+- api_ch4.test.js
+- helper.js
+Your current test script references api_ch3.test.js, so the file path is correct.
+
+Fix the test scripts for Windows
+Your current scripts use Unix-style environment variables:
+"test": "TESTING=true node --test --test-concurrency=1 tests/api_ch3.test.js",
+"start:test": "TESTING=true node cli.js"
+
+Windows PowerShell does not support that syntax directly.
+
+I recommend installing cross-env, which makes environment-variable scripts work on Windows, macOS, and Linux.
+
+Run:
+npm install --save-dev cross-env
+Now update your package.json scripts to use it:
+"scripts": {
+  "start": "node cli.js",
+  "test": "cross-env TESTING=true node --test --test-concurrency=1 tests/api_ch3.test.js",
+  "start:test": "cross-env TESTING=true PORT=3001 node cli.js"
+}
+
+What changed?
+- cross-env TESTING=true sets testing mode.
+- PORT=3001 starts your testing server on port 3001.
+- npm test runs the automated tests in api_ch3.test.js.
+
+Start the testing server
+Open Terminal 1 and run:
+npm run start:test
+
+You should see:
+Connected database: test_db
+Server running on port 3001
+
+Run the automated tests
+Keep Terminal 1 running.
+
+Open Terminal 2 in VS Code, navigate to your project folder if necessary, and run:
+npm test
+
+This command runs:
+tests/api_ch3.test.js
+The tests will send requests to your running application on port 3001.
+
+Good, we have found the real problem. The tests are reaching your server, but the login request is returning 401 Unauthorized.
+
+The important part of the error is:
+AxiosError: Request failed with status code 401
+at async login (tests/helper.js:37:20)
+at async resetAndSeed (tests/helper.js:58:18)
+
+What is happening?
+The test setup runs before the tests themselves:
+1. resetAndSeed() prepares the database.
+2. It calls login() to log in with a test user.
+3. Your login endpoint rejects that login with 401.
+4. The setup fails, so the eight tests are cancelled.
+
+1: Check the test login details
+In PowerShell, run this command:
+Get-Content .\tests\helper.js
+Then also show your login controller:
+Get-Content .\controllers\login.js
+I want to compare the username and password the tests send with what your login route expects.
+
+Thanks. The test helper tells us exactly which credentials it uses:
+Username	              Password
+test1@example.com	      password123
+test2@example.com	      password456
+
+It first creates these users through POST /api/users, then logs them in through POST /api/login.
+
+The 401 means the login controller is rejecting one of those credentials. A likely cause is that your user-creation route hashes the password, but your login route compares it incorrectly—or expects a different password format.
+Step 2: Show me your login controller
+Run:
+Get-Content .\controllers\login.js
+
+Also show the user model:
+Get-Content .\models\user.js
+
+I'll check how the password is stored and how it is verified. We should make the login route compatible with the tests without weakening password security.
+
+We found the cause. Your login controller currently checks:
+const passwordCorrect = body.password === "secret";
+
+That means it accepts only the literal password "secret".
+
+But the automated tests create users with passwords "password123" and "password456". So both login attempts receive 401.
+
+There is another important issue: your User model currently has no password field, so Sequelize has nowhere to store the passwords sent by the tests.
+
+We need to fix both sides: store a hashed password when creating a user, then compare the submitted password against that hash when logging in.
+
+Check how users are created
+Please run these two commands:
+Get-Content .\controllers\users.js
+
+npm ls bcrypt bcryptjs
+
+The first shows whether your registration route saves passwords. The second checks whether you already have a password-hashing library installed.
+
+Now we can see the full issue:
+1. POST /api/users ignores req.body.password.
+2. Your User model has no password column.
+3. Your login controller checks for the fixed password "secret".
+4. The tests expect each user to have their own password.
+Let's use bcrypt to hash passwords. This is the standard secure approach: we store a hash, not the original password.
+Step 4: Install bcrypt
+Run this one command:
+npm install bcrypt
+
+Now let's add a place to store the password hash.
+Step 5: Update models/user.js
+Inside User.init(), add this new field after name:
+passwordHash: {
+  type: DataTypes.STRING,
+  allowNull: false,
+},
+
+Your model should have these three main fields:
+- username
+- name
+- passwordHash
+
+Step 6: Update user creation
+Open controllers/users.js.
+
+At the top, add:
+const bcrypt = require("bcrypt");
+
+Now find this part:
+const user = await User.create({
+  username: req.body.username,
+  name: req.body.name,
+});
+
+Replace it with:
+const saltRounds = 10;
+const passwordHash = await bcrypt.hash(req.body.password, saltRounds);
+
+const user = await User.create({
+  username: req.body.username,
+  name: req.body.name,
+  passwordHash,
+});
+
+What happens here?
+User submits password
+password123
+bcrypt.hash()
+Converts the password into a secure hash.
+Database stores
+passwordHash
+
+Step 7: Fix the login password check
+In controllers/login.js, add this at the top:
+const bcrypt = require("bcrypt");
+
+Then replace:
+const passwordCorrect = body.password === "secret";
+
+with:
+const passwordCorrect = user
+  ? await bcrypt.compare(body.password, user.passwordHash)
+  : false;
+
+This does two things:
+- bcrypt.compare() checks whether the submitted password matches the stored hash.
+- If the username does not exist, it sets passwordCorrect to false without trying to compare anything.
+
+Step 8: Restart the test server
+Because we changed the model and controllers, restart the server so Sequelize can synchronize the new passwordHash column.
+1. Go to Terminal 1, where the server is running.
+2. Press Ctrl + C to stop it.
+3. Start it again:
+npm run start:test
+
+Wait until you see:
+Connected database: test_db
+Server running on port 3001
+
+Then, in Terminal 2, run:
+npm test
+
+Good, this is a database schema migration issue, not a bcrypt or login issue.
+Why did this happen?
+Your test database already has a users table containing existing records.
+
+You added this field:
+passwordHash: {
+  type: DataTypes.STRING,
+  allowNull: false,
+},
+
+When Sequelize runs syncModels() with alter: true, PostgreSQL tries to add:
+password_hash VARCHAR(255) NOT NULL
+
+But existing users have no password hash. PostgreSQL cannot create a required column with NULL values for those existing rows.
+
+Think of it this way:
+- Old users: no password_hash.
+- New model: every user must have password_hash.
+- PostgreSQL: "I cannot add this required field because existing users have no value for it."
+Step 1: Check the test database
+Since we're working with test_db, we can reset its users and blogs tables. The test suite already expects an empty database.
+
+First, open models/index.js and show me its contents:
+Get-Content .\models\index.js
+
+I want to confirm how your models are synchronized before we choose the safest fix. Don't delete or alter any tables yet.
+We must preserve your normal defaultdb data.
+
+Thanks. Your syncModels() uses alter: true, which is why Sequelize is trying to change the existing tables automatically.
+
+Since this is the test database, and the tests need an empty database, the simplest solution is to recreate its tables.
+
+Step 3: Recreate tables only in test mode
+Open models/index.js.
+
+Replace your existing syncModels function with:
+const syncModels = async () => {
+  if (process.env.TESTING === "true") {
+    await User.sync({ force: true });
+    await Blog.sync({ force: true });
+  } else {
+    await User.sync({ alter: true });
+    await Blog.sync({ alter: true });
+  }
+};
+
+Why this works:
+- force: true drops and recreates the table, removing old rows and creating the new password_hash column.
+- alter: true updates the normal database schema without intentionally dropping the tables.
+Important
+ This deletes all existing data in the selected test tables. It is appropriate here because we're using test_db, not defaultdb.
+
+Step 4: Restart the test server
+In Terminal 1:
+1. Stop the server with Ctrl + C.
+2. Run:
+npm run start:test
+
+Confirm that you see:
+Connected database: test_db
+Server running on port 3001
+
+Excellent! Success
+ Your test database has been recreated correctly.
+
+Look at these important lines:
+Connected database: test_db
+
+DROP TABLE IF EXISTS "users" CASCADE;
+CREATE TABLE IF NOT EXISTS "users" ...
+
+Your new users table now includes:
+"password_hash" VARCHAR(255) NOT NULL
+
+And your server is running on port 3001.
+
+Next step: Run the tests
+Keep Terminal 1 running. Open Terminal 2 and execute:
+npm test
+
+Great progress! 7 out of 8 tests are passing.
+
+Your bcrypt login is now working, and the Blogs API and Authors API tests both pass.
+
+The remaining failure is:
+users have correct properties
+false !== true
+tests/api_ch3.test.js:76
+
+This usually means the test expected a particular user property to be present or absent, but the returned user object does not match.
+
+One thing we should check first: your POST /api/users currently returns the entire Sequelize user object, including passwordHash. We should not expose password hashes in API responses.
+
+Step 1: Inspect the exact expectation
+Run:
+Get-Content .\tests\api_ch3.test.js
+
+Found it! The failing expectation is:
+assert.strictEqual(Array.isArray(user.blogs), true);
+
+The test expects the user's associated blogs to be returned under the property name blogs (lowercase).
+But your User.hasMany(Blog) association currently uses Sequelize's default property name Blogs (uppercase).
+Step 1: Fix the association name
+Open models/index.js.
+
+Change:
+User.hasMany(Blog);
+Blog.belongsTo(User);
+
+to:
+User.hasMany(Blog, {
+  as: "blogs",
+});
+
+Blog.belongsTo(User, {
+  as: "user",
+});
+
+Step 2: Update the users query
+In controllers/users.js, change your GET route's include:
+include: {
+  model: Blog,
+  attributes: { exclude: ["userId"] },
+},
+to:
+include: {
+  model: Blog,
+  as: "blogs",
+  attributes: { exclude: ["userId"] },
+},
+
+Now Sequelize knows that the association should be returned as blogs.
+Why? The as option defines the name of the association in the returned JavaScript object.
+Save both files, restart the test server, and run npm test again.
+
+
+The result is still 7/8, and the failure is at the same assertion: user.blogs is not an array.
+
+Let's not guess. We need to inspect what your API actually returns.
+Step 1: Check the users response
+With your test server still running on port 3001, run this in PowerShell:
+Invoke-RestMethod http://localhost:3001/api/users | ConvertTo-Json -Depth 5
+
+Look for the property name containing the blogs. Is it Blogs, blogs, or missing entirely?
+Step 2: Confirm both changes
+Also show me:
+Get-Content .\models\index.js
+and:
+Get-Content .\controllers\users.js
+
+
+Excellent debugging! We have found the exact problem.
+Your model association and query use as: "blogs", but the API response still contains:
+"Blogs": []
+
+This means Sequelize is returning the association using the old name. The likely cause is that your server is still running the old model definitions.
+Step 1: Fully restart the server
+In Terminal 1:
+1. Press Ctrl + C.
+2. Start it again:
+npm run start:test
+
+Wait for:
+Connected database: test_db
+Server running on port 3001
+
+Step 2: Check the response again
+In Terminal 2:
+Invoke-RestMethod http://localhost:3001/api/users | ConvertTo-Json -Depth 5
+
+We want to see:
+"blogs": []
+
+instead of:
+"Blogs": []
+
+
+Good! This response tells us that the /api/users endpoint is currently returning an empty array.
+{
+  "value": [],
+  "Count": 0
+}
+
+That means there are no users in the test database at the moment. It doesn't yet tell us whether the lowercase blogs alias is fixed, because there are no users to inspect.
+
+Let's take one small step: run the tests again so the test helper can reset the database and create the test users.
+
+In Terminal 2, run:
+npm test
+
+
+Excellent progress! We have fixed the previous problem: users have correct properties now passes. That confirms the lowercase blogs association is working.
+
+Now we have a new issue: three blog tests return HTTP 500.
+Test	                          Result
+Blogs initially empty	          Failed
+Add blog with authentication	  Passed
+Created blog appears in list	  Failed
+Update blog        	            Failed
+Users API	                      Passed
+Authors API	                    Passed
+
+Let's investigate the actual error instead of guessing.
+
+Look at Terminal 1, where npm run start:test is running. The server should have printed an error when those tests received status 500.
+
+Please copy and share the error from Terminal 1, especially the lines containing:
+- Error name
+- Error message
+- Any Sequelize error or SQL query
+That error will help us identify exactly why the blog GET and update requests are failing.
+
+
+Perfect! We found the exact problem. This is a Sequelize association-alias issue, not a database problem.
+The important error is:
+user is associated to Blog using an alias.
+You must use the 'as' keyword to specify the alias within your include statement.
+
+Remember, in models/index.js, we defined the relationship like this:
+Blog.belongsTo(User, {
+  as: "user",
+});
+
+This means Sequelize expects us to use the alias user whenever we include the associated User while querying Blogs.
+Step 1: Fix the blogs controller
+Open controllers/blogs.js.
+
+Find the Blog.findAll() query around line 29. It probably looks similar to this:
+const blogs = await Blog.findAll({
+  include: {
+    model: User,
+    attributes: ["name"],
+  },
+});
+
+Change it to:
+const blogs = await Blog.findAll({
+  include: {
+    model: User,
+    as: "user",
+    attributes: ["name"],
+  },
+});
+
+Why?
+- model: User tells Sequelize which model to include.
+- as: "user" tells Sequelize which association to use.
+- attributes: ["name"] tells Sequelize to return only the user's name.
+The alias must match the one in Blog.belongsTo(User, { as: "user" }) exactly.
+Step 2
+Save the file and run the tests again:
+npm test
+
+
+Your controllers/users.js has three places where passwordHash could accidentally be exposed:
+1. GET /api/users — returns all users.
+2. POST /api/users — returns the newly created user.
+3. PUT /api/users/:username and GET /api/users/:id — return individual users.
+Let's protect all four routes.
+Step 1: Update GET all users
+Find:
+const users = await User.findAll({
+  include: {
+    model: Blog,
+    as: "blogs",
+    attributes: { exclude: ["userId"] },
+  },
+});
+
+Change it to:
+const users = await User.findAll({
+  attributes: { exclude: ["passwordHash"] },
+  include: {
+    model: Blog,
+    as: "blogs",
+    attributes: { exclude: ["userId"] },
+  },
+});
+
+Explanation: attributes controls which database fields Sequelize returns. Here, we exclude passwordHash while keeping the other user fields and associated blogs.
+Step 2: Update POST create user
+Find:
+res.status(201).json(user);
+
+Replace it with:
+res.status(201).json({
+  id: user.id,
+  username: user.username,
+  name: user.name,
+});
+
+We return only the information the client needs. The password hash stays in the database.
+Step 3: Update PUT user
+Find:
+res.json(user);
+
+
+In the PUT route, replace it with:
+res.json({
+  id: user.id,
+  username: user.username,
+  name: user.name,
+});
+
+Step 4: Update GET one user
+Find:
+const user = await User.findByPk(req.params.id);
+
+Change it to:
+const user = await User.findByPk(req.params.id, {
+  attributes: { exclude: ["passwordHash"] },
+});
+
+You can keep res.json(user) in this route because Sequelize has already excluded the hash.
+
+What we have achieved
+Endpoint	Protection
+GET /api/users	Excludes passwordHash
+POST /api/users	Returns only safe fields
+PUT /api/users/:username	Returns only safe fields
+GET /api/users/:id	Excludes passwordHash
+
+The important distinction: We are not deleting passwordHash from the database. We are only preventing it from being included in API responses.
+Step 5: Test your changes
+Run:
+npm test
+
+
+This error is not caused by the changes we made in controllers/users.js. It's a database connection timeout.
+The important part is:
+connect ETIMEDOUT 209.38.47.89:28566
+
+Your application is trying to connect to your Aiven PostgreSQL database, but it isn't receiving a response.
+Remember our setup:
+- DATABASE_URL → normal database (defaultdb).
+- TEST_DATABASE_URL → test database (test_db).
+- npm run start:test → selects TEST_DATABASE_URL.
+Step 1: Check your Aiven database
+Open your Aiven dashboard and check the PostgreSQL service.
+
+Look for its status. Is it Running or Stopped?
+
+If it is stopped, start it and wait until it becomes available.
+Step 2: Try again
+Once the service is running, return to PowerShell:
+npm run start:test
+
+You should see something similar to:
+Connected database: test_db
+Connection to the database established successfully.
+Server running on port 3001

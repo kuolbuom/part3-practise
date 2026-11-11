@@ -1,0 +1,436 @@
+Admin user and user disabling
+So we want to add two boolean fields to the users table
+
+admin indicates whether the user is an admin
+disabled indicates whether the user account has been disabled.
+Let's create the migration that modifies the database in the file migrations/20260211_02_admin_and_disabled_to_users.js:
+
+
+const { DataTypes } = require('sequelize')
+
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.addColumn('users', 'admin', {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    })
+    await queryInterface.addColumn('users', 'disabled', {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    })
+  },
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.removeColumn('users', 'admin')
+    await queryInterface.removeColumn('users', 'disabled')
+  },
+}
+Make corresponding changes to the model corresponding to the users table:
+
+
+User.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  username: {
+    type: DataTypes.STRING,
+    unique: true,
+    allowNull: false
+  },
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  admin: {    
+    type: DataTypes.BOOLEAN,    
+    defaultValue: false  
+  },
+  disabled: {    
+    type: DataTypes.BOOLEAN,    
+    defaultValue: false  
+  },
+}, {
+  sequelize,
+  underscored: true,
+  timestamps: false,
+  modelName: 'user'
+})
+When the new migration is performed when the code restarts, the schema is changed as desired:
+
+
+username-> \d users
+                                     Table "public.users"
+  Column  |          Type          | Collation | Nullable |              Default
+----------+------------------------+-----------+----------+-----------------------------------
+ id       | integer                |           | not null | nextval('users_id_seq'::regclass)
+ username | character varying(255) |           | not null |
+ name     | character varying(255) |           | not null |
+ admin    | boolean                |           |          |
+ disabled | boolean                |           |          |
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+Referenced by:
+    TABLE "notes" CONSTRAINT "notes_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id)
+Now let's expand the controllers as follows. We prevent logging in if the user field disabled is set to true:
+
+
+router.post('/', async (request, response) => {
+  const body = request.body
+
+  const user = await User.findOne({
+    where: {
+      username: body.username
+    }
+  })
+
+  const passwordCorrect = body.password === 'secret'
+
+  if (!(user && passwordCorrect)) {
+    return response.status(401).json({
+      error: 'invalid username or password'
+    })
+  }
+
+  if (user.disabled) {
+    return response.status(401).json({
+      error: 'account disabled, please contact admin'
+    })
+  }  
+
+  const userForToken = {
+    username: user.username,
+    id: user.id,
+  }
+
+  const token = jwt.sign(userForToken, SECRET)
+
+  response
+    .status(200)
+    .send({ token, username: user.username, name: user.name })
+})
+Let's disable the user jakousa using his ID:
+
+
+username => update users set disabled=true where id=4;
+UPDATE 1
+username => select * from users;
+ id | username |              name               | admin | disabled 
+----+----------+---------------------------------+-------+----------
+  2 | mluukkai | Matti Luukkainen                | f     | f
+  4 | jakousa  | Jami Kousa (The Docker Captain) | f     | t
+  3 | ousa     | Outi Savolainen                 | t     | f
+And make sure that logging in is no longer possible
+
+Add alt
+Let's create a route (to file controllers/users.js) that will allow an admin to change the status of a user's account:
+
+
+const isAdmin = async (req, res, next) => {
+  const user = await User.findByPk(req.decodedToken.id)
+  if (!user.admin) {
+    return res.status(401).json({ error: 'operation not allowed' })
+  }
+  next()
+}
+
+router.put('/:username', tokenExtractor, isAdmin, async (req, res) => {
+  const user = await User.findOne({
+    where: {
+      username: req.params.username
+    }
+  })
+
+  if (user) {
+    user.disabled = req.body.disabled
+    await user.save()
+    res.json(user)
+  } else {
+    res.status(404).end()
+  }
+})
+There are two middleware used, the first called tokenExtractor is the same as the one used by the note-creation route, i.e. it places the decoded token in the decodedToken field of the request-object. The second middleware isAdmin checks whether the user is an admin and if not, the request status is set to 401 and an appropriate error message is returned.
+
+Note how two middleware are chained to the route, both of which are executed before the actual route handler. It is possible to chain an arbitrary number of middleware to a request.
+
+The middleware tokenExtractor is now moved to util/middleware.js as it is used from multiple locations:
+
+
+const jwt = require('jsonwebtoken')
+const { SECRET } = require('./config.js')
+
+const tokenExtractor = (req, res, next) => {
+  const authorization = req.get('authorization')
+  if (authorization && authorization.toLowerCase().startsWith('bearer ')) {
+    try {
+      req.decodedToken = jwt.verify(authorization.substring(7), SECRET)
+    } catch{
+      return res.status(401).json({ error: 'token invalid' })
+    }
+  } else {
+    return res.status(401).json({ error: 'token missing' })
+  }
+  next()
+}
+
+module.exports = { tokenExtractor }
+Perhaps it is a good idea to move also the isAdmin middleware to the same file.
+
+An admin can now re-enable the user jakousa by making a PUT request to /api/users/jakousa, where the request comes with the following data:
+
+
+{
+    "disabled": false
+}
+As noted in the end of Part 4(opens in a new tab), the way we implement disabling users here is problematic. Whether or not the user is disabled is only checked at login, if the user has a token at the time the user is disabled, the user may continue to use the same token, since no lifetime has been set for the token and the disabled status of the user is not checked when creating notes.
+
+Before we proceed, let's make an npm script for the application, which allows us to undo the previous migration. After all, not everything always goes right the first time when developing migrations.
+
+Let's modify the file util/db.js as follows:
+
+
+const Sequelize = require('sequelize')
+const { DATABASE_URL } = require('./config')
+const { Umzug, SequelizeStorage } = require('umzug')
+
+const sequelize = new Sequelize(DATABASE_URL, {
+  dialectOptions: {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false
+    }
+  },
+});
+
+const connectToDatabase = async () => {
+  try {
+    await sequelize.authenticate()
+    await runMigrations()
+    console.log('connected to the database')
+  } catch (err) {
+    console.log('failed to connect to the database')
+    return process.exit(1)
+  }
+}
+
+const migrationConf = {
+  migrations: {
+    glob: 'migrations/*.js',
+  },
+  storage: new SequelizeStorage({ sequelize, tableName: 'migrations' }),
+  context: sequelize.getQueryInterface(),
+  logger: console,
+}
+  
+const runMigrations = async () => {
+  const migrator = new Umzug(migrationConf)
+  const migrations = await migrator.up()
+  console.log('Migrations up to date', {
+    files: migrations.map((mig) => mig.name),
+  })
+}
+const rollbackMigration = async () => {
+  await sequelize.authenticate()
+  const migrator = new Umzug(migrationConf)
+  await migrator.down()
+}
+
+module.exports = { connectToDatabase, sequelize, rollbackMigration }
+Let's create a file util/rollback.js, which will allow the npm script to execute the specified migration rollback function:
+
+
+const { rollbackMigration } = require('./db')
+
+rollbackMigration()
+and the script to the file package.json:
+
+
+{
+  "scripts": {
+    "dev": "node --watch index.js",
+    "migration:down": "node util/rollback.js"  
+  },
+}
+So we can now undo the previous migration by running npm run migration:down from the command line.
+
+Migrations are currently executed automatically when the program is started. In the development phase of the program, it might sometimes be more appropriate to disable the automatic execution of migrations and make migrations manually from the command line.
+
+username-> \d users
+                                     Table "public.users"
+  Column  |          Type          | Collation | Nullable |              Default              
+----------+------------------------+-----------+----------+-----------------------------------
+ id       | integer                |           | not null | nextval('users_id_seq'::regclass)
+ username | character varying(255) |           | not null | 
+ name     | character varying(255) |           | not null | 
+ admin    | boolean                |           |          | false
+ disabled | boolean                |           |          | false
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+    "users_username_key1" UNIQUE CONSTRAINT, btree (username)
+    "users_username_key2" UNIQUE CONSTRAINT, btree (username)
+Referenced by:
+    TABLE "notes" CONSTRAINT "notes_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+
+
+defaultdb=> update users set disabled=true where id=3;
+UPDATE 1
+defaultdb=> select * from users;
+ id |  username  |    name     | admin | disabled 
+----+------------+-------------+-------+----------
+  1 | johnsmith  | John Smith  | f     | f
+  2 | maryjones  | Mary Jones  | f     | f
+  3 | davidbrown | David Brown | f     | t
+(3 rows)
+
+defaultdb=> 
+
+defaultdb=> update users set disabled=false where id=3;
+UPDATE 1
+defaultdb=> 
+
+Test these four situations
+First, log in and obtain a valid token.
+
+Then test your PUT route:
+
+Test A: No token
+PUT http://localhost:3000/api/users/username
+Content-Type: application/json
+
+{
+  "disabled": true
+}
+
+
+Expected: 401 token missing.
+
+Test B: Invalid token
+PUT http://localhost:3000/api/users/username
+Authorization: Bearer invalidtoken123
+Content-Type: application/json
+
+{
+  "disabled": true
+}
+
+
+Expected: 401 token invalid.
+
+Test C: Valid token, but non-admin user
+
+Expected: 403 operation not allowed (after changing your middleware to use 403).
+
+Test D: Valid token and admin user
+
+Expected: 200 OK, and the account gets updated.
+
+You placed the PUT request in the login route instead of the users route.
+
+Your router separation should be:
+Controller	     Responsibility	           Endpoint
+login.js	       Authenticate users        POST /api/login
+                 and generate tokens
+
+users.js	       Create, retrieve, and     POST /api/users, PUT /api/users/:username
+                 update users
+
+Remember this distinction:
+Status	                Meaning
+401	                    Who are you? Authentication failed.
+403	                    I know who you are, but you don't have permission.
+200	                    Request succeeded.
+
+
+Create a normal user
+POST http://localhost:3000/api/users
+Content-Type: application/json
+
+{
+  "username": "adminuser",
+  "name": "Admin User",
+  "password": "secret123"
+}
+
+Promote the user to admin
+UPDATE users
+SET admin = TRUE
+WHERE username = 'adminuser'
+RETURNING id, username, admin;
+
+Log in and obtain the token
+Send:
+POST http://localhost:3000/api/login
+Content-Type: application/json
+
+{
+  "username": "adminuser",
+  "password": "secret"
+}
+
+Copy the returned token.
+
+Then test:
+PUT http://localhost:3000/api/users/davidbrown
+Authorization: Bearer YOUR_ADMIN_TOKEN
+Content-Type: application/json
+
+{
+  "disabled": true
+}
+
+
+Expected result: 200 OK, with David's account updated.
+
+One important concept to remember:
+- Creating a user does not automatically make them an admin.
+- admin = true gives the user administrative privileges.
+- Logging in generates a token identifying that user.
+- isAdmin checks the user's current admin status in the database.
+
+Understanding your four users
+User	         Admin	           Disabled	          Meaning
+John Smith	   false	           false	            Normal active user
+Mary Jones	   false	           false              Normal active user
+Admin User	   true	             false	            Active administrator
+David Brown	   false	           true	              Disabled normal user
+
+What this tells us
+1. John and Mary: Can log in, but cannot perform admin-only operations.
+2. Admin User: Can log in and perform admin-only operations.
+3. David: Cannot log in because disabled is true.
+
+POST  http://localhost:3001/api/login
+Content-Type: application/json
+
+{
+  "username": "davidbrown",
+  "password": "secret"
+}
+expect:
+HTTP/1.1 401 Unauthorized
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 50
+ETag: W/"32-Mcypa7n82bdDhbNtu0Ihcfb5u1c"
+Date: Tue, 03 Nov 2026 11:48:22 GMT
+Connection: close
+
+{
+  "error": "account disabled, please contact admin"
+}
+
+So we can now undo the previous migration by running npm run migration:down from the command line.
+npm run migration:down
+
+The correct word is revert (not reverte).
+- Revert = return something to its previous state.
+- Delete = remove something.
+- Restore = bring something back.
+- Undo = reverse an action.
+In Git, for example:
+git revert <commit-id>
+
+This creates a new commit that reverses the changes made by an earlier commit.
+Example: "I want to revert my changes" means you want to return your code to an earlier state.

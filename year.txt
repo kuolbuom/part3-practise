@@ -1,0 +1,472 @@
+2026211_01_add_year_to_blogs.js
+
+Add this code:
+module.exports = {
+  up: async ({ context: queryInterface }) => {
+    await queryInterface.addColumn("blogs", "year", {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    });
+  },
+
+  down: async ({ context: queryInterface }) => {
+    await queryInterface.removeColumn("blogs", "year");
+  },
+};
+
+
+If your migration files use DataTypes, make sure you import it:
+const { DataTypes } = require("sequelize");
+
+Step 3: Update the Blog model
+After the migration succeeds, we'll add the year attribute to your Blog model with these validations:
+- Must be an integer.
+- Minimum: 1991.
+- Maximum: current year (new Date().getFullYear()).
+- Appropriate validation error messages.
+
+Step 2: Add year validation to the Blog model
+Open your models/blog.js file.
+
+Inside the model attributes, add:
+year: {
+  type: DataTypes.INTEGER,
+  allowNull: true,
+  validate: {
+    min: {
+      args: [1991],
+      msg: "Year must be at least 1991",
+    },
+    max: {
+      args: [new Date().getFullYear()],
+      msg: `Year cannot be greater than ${new Date().getFullYear()}`,
+    },
+    isInt: {
+      msg: "Year must be an integer",
+    },
+  },
+},
+
+
+Why allowNull: true?
+
+Your existing blogs were created before the year column existed. Allowing NULL means those existing blogs can remain without a year.
+
+New blogs can still provide a year, and Sequelize will validate it when one is supplied.
+
+Important: This validation happens at the Sequelize model level, not directly in PostgreSQL.
+
+Step 3: Test creating blogs
+Open your REST Client file.
+
+1. Valid year (should succeed)
+POST http://localhost:3000/api/blogs
+Content-Type: application/json
+
+{
+  "title": "Learning Sequelize",
+  "author": "Kuol",
+  "url": "https://example.com",
+  "likes": 5,
+  "year": 2024
+}
+
+
+2. Year below 1991 (should fail)
+POST http://localhost:3000/api/blogs
+Content-Type: application/json
+
+{
+  "title": "Old Blog",
+  "author": "Kuol",
+  "url": "https://example.com",
+  "likes": 5,
+  "year": 1990
+}
+
+
+3. Year greater than 2026 (should fail)
+POST http://localhost:3000/api/blogs
+Content-Type: application/json
+
+{
+  "title": "Future Blog",
+  "author": "Kuol",
+  "url": "https://example.com",
+  "likes": 5,
+  "year": 2027
+}
+
+
+4. Decimal year (should fail)
+POST http://localhost:3000/api/blogs
+Content-Type: application/json
+
+{
+  "title": "Decimal Blog",
+  "author": "Kuol",
+  "url": "https://example.com",
+  "likes": 5,
+  "year": 2024.5
+}
+
+
+What we're checking
+Test	Expected result
+2024	Accepted
+1990	Rejected
+2027	Rejected
+2024.5	Rejected
+
+Let's review what you've accomplished:
+1. Created a new migration to add year to the existing blogs table.
+2. Added year as an integer in the Blog model.
+3. Allowed existing blogs to have NULL years.
+4. Added minimum validation (1991).
+5. Added maximum validation (current year, dynamically calculated).
+6. Added integer validation (isInt).
+7. Tested valid and invalid values through REST Client.
+
+This error is likely related to your GitHub Actions test database and migrations.
+original: error: relation "public.blogs" does not exist
+
+caused By:
+Migration filename ordering
+Your files are:
+2026211_00_initialize_blogs_and_users.js
+20261104_01_add_year_to_blogs.js
+
+Fix the initial migration filename to:
+2026211_00_initialize_blogs_and_users.js
+2026211_01_add_year_to_blogs.js
+
+1. What is the migrations table?
+When your application runs a migration, Umzug records the migration's filename in the migrations table.
+
+For example, after your migration runs, the table might contain:
+name
+2026211_00_initialize_blogs_and_users.js
+
+This record tells Umzug:
+"I have already executed this migration. Don't run it again."
+
+2. What happens if you delete the tables manually?
+Imagine you run these SQL commands:
+DROP TABLE blogs CASCADE;
+DROP TABLE users CASCADE;
+
+
+Now the blogs and users tables are gone.
+
+However, the migrations table still contains the record saying that your migration has already run.
+
+So, when you restart your application:
+1. Umzug checks the migrations table.
+2. It sees your migration filename.
+3. It assumes the migration has already been executed.
+4. It skips the migration.
+5. Your blogs and users tables remain missing!
+3. How do you solve this?
+You must also delete the migration records:
+DELETE FROM migrations;
+
+
+This removes the records but keeps the migrations table itself.
+
+When you restart your application:
+1. Umzug checks the migrations table.
+2. It finds no executed migration records.
+3. It runs your migration again.
+4. The users and blogs tables are created again.
+5. Umzug records the migration filename.
+4. What you did in your exercise
+You used:
+DROP TABLE IF EXISTS notes CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS migrations CASCADE;
+
+
+Then you restarted your application.
+
+That worked because you deleted the migrations table itself, along with the other tables. Umzug recreated the migrations table and ran your migration again.
+
+The important difference:
+- DELETE FROM migrations; — removes migration records but keeps the table.
+- DROP TABLE migrations; — removes the entire migrations table.
+Both approaches can work in this situation.
+Remember this mental model
+Think of the migrations table as a checklist. It tells Umzug which database changes have already been completed.
+
+If you manually delete the database tables but leave the checklist unchanged, Umzug thinks everything is still done!
+
+Yes! Now we have found the exact problem. And it is not seeds, SSL, or GitHub Actions. It is a column-name mismatch between your migration and Sequelize model.
+Root cause identified
+1. Look at the evidence
+Your migration creates this column:
+"passwordHash" VARCHAR(255) NOT NULL
+
+
+But Sequelize tries to insert into:
+"password_hash"
+
+
+The error confirms it:
+column "password_hash" of relation "users" does not exist
+
+2. Why does this happen?
+In your User model, you have:
+{
+  sequelize,
+  underscored: true,
+  timestamps: true,
+  modelName: "user",
+}
+
+The setting:
+underscored: true
+
+tells Sequelize to convert camelCase column names into snake_case.
+
+For example:
+Model attribute	Database column
+createdAt	created_at
+updatedAt	updated_at
+passwordHash	password_hash
+
+But your migration created passwordHash, not password_hash.
+3. The fix
+Open your migration file:
+
+migrations/2026211_00_initialize_blogs_and_users.js
+
+Find this:
+passwordHash: {
+  type: DataTypes.STRING,
+  allowNull: false,
+},
+
+
+Change it to:
+password_hash: {
+  type: DataTypes.STRING,
+  allowNull: false,
+},
+
+Good, we have fixed the password_hash mismatch, and now GitHub has moved to the next database mismatch.
+
+The new error:
+column "user_id" of relation "blogs" does not exist
+
+
+means Sequelize is trying to save or retrieve a user_id column in the blogs table, but your migration did not create that column.
+Why is this happening?
+Your models have a relationship:
+User.hasMany(Blog);
+Blog.belongsTo(User);
+
+
+Sequelize automatically creates a foreign-key attribute called userId, which maps to user_id because you use:
+underscored: true
+
+
+But your migration currently creates the blogs table without user_id.
+The fix
+Add this column to the blogs table in your migration:
+user_id: {
+  type: DataTypes.INTEGER,
+  references: {
+    model: "users",
+    key: "id",
+  },
+  onDelete: "SET NULL",
+},
+
+This error means Sequelize is inserting a blog without providing a value for created_at, but your database migration requires that column to have a value.
+null value in column "created_at" of relation "blogs"
+violates not-null constraint
+
+
+Why is this happening?
+You have two different configurations:
+
+In your migration:
+created_at: {
+  type: DataTypes.DATE,
+  allowNull: false,
+  defaultValue: DataTypes.NOW,
+},
+
+
+In your Blog model, you probably have:
+{
+  sequelize,
+  underscored: true,
+  timestamps: true,
+  modelName: "blog",
+}
+
+
+With timestamps: true, Sequelize automatically manages createdAt and updatedAt, mapping them to created_at and updated_at.
+
+You should not need to define these timestamp attributes manually in your model.
+Let's check before changing anything
+Please paste your current models/blog.js.
+
+I want to check whether you accidentally defined created_at or updated_at manually in the model, or whether Sequelize is not managing timestamps as expected.
+
+I found the problem! It's in this line of your Blog model:
+timestamps: false,
+
+
+This tells Sequelize:
+Do not automatically manage createdAt and updatedAt.
+
+But your migration requires both created_at and updated_at to have values (allowNull: false).
+1. Fix your Blog model
+Change:
+timestamps: false,
+
+
+to:
+timestamps: true,
+
+
+Your model options should now be:
+{
+  sequelize,
+  underscored: true,
+  timestamps: true,
+  modelName: "Blog",
+}
+
+
+2. Understand what happens
+Before: timestamps: false
+Sequelize
+Does not provide timestamps
+
+PostgreSQL
+Rejects the blog because created_at is NULL.
+
+After: timestamps: true
+Sequelize
+Automatically provides timestamps
+
+PostgreSQL
+Accepts the blog.
+
+With underscored: true, Sequelize maps createdAt to created_at and updatedAt to updated_at.
+3. One more thing
+Check your User model too. It should also have:
+timestamps: true,
+underscored: true,
+
+Then run locally:
+npm test
+
+If all 8 tests pass, push the changes to GitHub.
+
+Okay. This means the blogs table does not currently exist in defaultdb. You dropped it, so PostgreSQL has no table to show.
+
+Let's recreate it through your migration rather than manually creating it.
+Step 1 — Start the application
+In PowerShell, from your part13-blog project folder, run:
+npm start
+
+
+Your connectionToDatabase() function should run the Umzug migration when the application connects.
+Step 2 — Check the migration output
+Look for a message showing that the migration ran successfully.
+
+Then open psql again and run:
+\d blogs
+
+
+Paste both the application output and the \d blogs result here.
+
+Great! Your blogs table now has the correct columns.
+
+I can see:
+- created_at and updated_at exist.
+- user_id exists.
+- user_id has a foreign key referencing users(id).
+- The foreign key uses ON DELETE SET NULL, which allows a blog to remain if its user is deleted.
+So the migration is now creating the expected table structure.
+Why did you get Blog.created_at does not exist earlier?
+Most likely, the application was using an older version of the table before you dropped and recreated it.
+Next step
+Run your tests again:
+npm test
+
+
+If they pass locally, push your changes to GitHub and check the Actions run.
+
+If GitHub fails again, share the new error from app.log. We can then identify
+
+I found the important detail in your log: your application is connected to test_db, not defaultdb.
+
+You checked the blogs table in defaultdb, where created_at exists. But your test server runs with:
+TESTING=true
+
+
+Your database configuration therefore selects TEST_DATABASE_URL.
+
+That explains why the table you inspected and the table Sequelize is querying can be different.
+
+Also, your migration runs successfully in test_db, but the SQL query immediately afterward says created_at does not exist. We need to inspect the actual test_db table before changing any model or migration code.
+Step 1 — Inspect test_db
+In your PostgreSQL terminal, run:
+\c test_db
+
+Then:
+\d blogs
+
+Paste the output here.
+
+Excellent. We've found the actual problem.
+
+Your test_db.blogs table has these columns:
+id
+author
+url
+title
+likes
+user_id
+
+
+But it is missing:
+created_at
+updated_at
+
+
+Your migration says CREATE TABLE IF NOT EXISTS. Since blogs already exists, PostgreSQL skips creating it and does not add the missing columns.
+Step 1 — Fix the migration properly
+Open your migration file:
+
+migrations/2026211_00_initialize_blogs_and_users.js
+
+Find the part that creates the blogs table. Please paste the entire migration file here.
+
+I want to check its up and down functions before we change anything. We should fix the migration so a fresh database is created correctly, and then reset the existing test_db migration state safely.
+
+Step 1 — Stop the test server
+In the PowerShell window running npm run start:test, press:
+Ctrl + C
+
+
+Step 2 — Reset only the test database tables
+Connect to test_db in psql and run:
+DROP TABLE IF EXISTS blogs CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS migrations CASCADE;
+
+
+This deletes the test database's blog/user data and migration history. It does not affect defaultdb.
+Step 3 — Start the test server again
+npm run start:test
+
+
+Umzug should now run the migration against an empty schema and recreate both tables with all the required columns.
+
+Then run:
+npm test
